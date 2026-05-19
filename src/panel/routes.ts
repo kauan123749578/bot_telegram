@@ -20,12 +20,13 @@ import {
   salesRankingByBot,
   saveProduct
 } from "../db/events.js";
-import { loadBots, saveBots, uploadsDir } from "../bots.js";
+import { deleteBot, getBotById, loadBots, upsertBot, uploadsDir } from "../bots.js";
+import { authenticateUser, createUser } from "../db/users.js";
 import { encryptSecret } from "../lib/crypto.js";
 import {
   clearSessionCookie,
   isAuthenticated,
-  requireAuth,
+  requireUser,
   setSessionCookie
 } from "../lib/session.js";
 import { getApiKeyStatus, getOpenAIModel, updateOpenAISettings } from "../lib/settings.js";
@@ -44,9 +45,15 @@ import {
   instancesPage,
   loginPage,
   newInstancePage,
+  registerPage,
   settingsPage,
   topBotsRankingHtml
 } from "./ui.js";
+
+async function rowsForUser<T extends Record<string, unknown>>(rows: T[], userId: string) {
+  const ids = new Set((await loadBots(userId)).map((b) => b.id));
+  return rows.filter((r) => ids.has(String(r.bot_id ?? r.botId ?? "")));
+}
 
 async function saveUploadedFile(file: AsyncIterable<Buffer>, originalName: string) {
   await fs.mkdir(uploadsDir, { recursive: true });
@@ -91,7 +98,7 @@ export async function registerPanelRoutes(
 
   app.addHook("onRequest", async (request, reply) => {
     const urlPath = request.url.split("?")[0];
-    const publicPaths = ["/login", "/uploads", "/health"];
+    const publicPaths = ["/login", "/register", "/uploads", "/health"];
     if (publicPaths.some((p) => urlPath === p || urlPath.startsWith(`${p}/`))) return;
     if (!isAuthenticated(request)) return reply.redirect("/login");
   });
@@ -105,12 +112,43 @@ export async function registerPanelRoutes(
     return reply.type("text/html").send(loginPage());
   });
 
-  app.post("/login", async (request, reply) => {
-    const body = z.object({ password: z.string() }).parse(request.body);
-    if (body.password !== env.PANEL_PASSWORD) {
-      return reply.code(401).type("text/html").send(loginPage("Senha incorreta."));
+  app.get("/register", async (request, reply) => {
+    if (isAuthenticated(request)) return reply.redirect("/");
+    return reply.type("text/html").send(registerPage());
+  });
+
+  app.post("/register", async (request, reply) => {
+    try {
+      const body = z
+        .object({
+          name: z.string().min(2),
+          email: z.string().email(),
+          password: z.string().min(6)
+        })
+        .parse(request.body);
+      const user = await createUser(body);
+      setSessionCookie(reply, user);
+      return reply.redirect("/");
+    } catch (error) {
+      return reply
+        .code(400)
+        .type("text/html")
+        .send(registerPage(errorMessage(error)));
     }
-    setSessionCookie(reply);
+  });
+
+  app.post("/login", async (request, reply) => {
+    const body = z
+      .object({
+        email: z.string().email(),
+        password: z.string().min(1)
+      })
+      .parse(request.body);
+    const user = await authenticateUser(body.email, body.password);
+    if (!user) {
+      return reply.code(401).type("text/html").send(loginPage("E-mail ou senha incorretos."));
+    }
+    setSessionCookie(reply, user);
     return reply.redirect("/");
   });
 
@@ -120,34 +158,37 @@ export async function registerPanelRoutes(
   });
 
   app.get("/", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
-    const bots = await loadBots();
+    const bots = await loadBots(user.id);
     const partial = isPartial(request);
     const html = dashboardPage(
       bots,
       {
-        stats: await dashboardStats(),
-        chart: await salesByDay(7),
-        activities: await listRecentActivity(8),
-        topBots: await salesRankingByBot(5)
+        stats: await dashboardStats(user.id),
+        chart: await salesByDay(7, user.id),
+        activities: await listRecentActivity(8, user.id),
+        topBots: await salesRankingByBot(5, user.id)
       },
       query.msg,
       query.t === "err",
-      partial
+      partial,
+      user.name
     );
     return reply.type("text/html").send(html);
   });
 
   app.get("/api/panel/live", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
-    const bots = await loadBots();
-    const stats = await dashboardStats();
-    const chart = await salesByDay(7);
-    const activities = await listRecentActivity(8);
-    const topBots = await salesRankingByBot(5);
-    const latestSale = await getLatestSale();
-    const recentSales = await listSales(8);
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const bots = await loadBots(user.id);
+    const stats = await dashboardStats(user.id);
+    const chart = await salesByDay(7, user.id);
+    const activities = await listRecentActivity(8, user.id);
+    const topBots = await salesRankingByBot(5, user.id);
+    const latestSale = await getLatestSale(user.id);
+    const recentSales = await listSales(8, user.id);
 
     const bellSales = recentSales.map((row) => {
       const s = row as Record<string, unknown>;
@@ -183,33 +224,46 @@ export async function registerPanelRoutes(
   });
 
   app.get("/leads", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
-    const html = leadsPage(await listLeads(200), isPartial(request));
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const html = leadsPage(await rowsForUser(await listLeads(200), user.id), isPartial(request));
     return reply.type("text/html").send(html);
   });
 
   app.get("/conversations", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
-    const html = conversationsPage(await listConversations(120), isPartial(request));
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const html = conversationsPage(
+      await rowsForUser(await listConversations(120), user.id),
+      isPartial(request)
+    );
     return reply.type("text/html").send(html);
   });
 
   app.get("/payments", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
-    const html = paymentsPage(await listReceipts(80), isPartial(request));
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const html = paymentsPage(await rowsForUser(await listReceipts(80), user.id), isPartial(request));
     return reply.type("text/html").send(html);
   });
 
   app.get("/products", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     const query = z.object({ msg: z.string().optional() }).parse(request.query);
-    const bots = await loadBots();
-    const html = productsPage(bots, await listProducts(), query.msg, isPartial(request));
+    const bots = await loadBots(user.id);
+    const html = productsPage(
+      bots,
+      await rowsForUser(await listProducts(), user.id),
+      query.msg,
+      isPartial(request)
+    );
     return reply.type("text/html").send(html);
   });
 
   app.post("/products", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     try {
       const body = z
         .object({
@@ -230,30 +284,36 @@ export async function registerPanelRoutes(
   });
 
   app.get("/media", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
-    const html = mediaPage(await loadBots(), isPartial(request));
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const html = mediaPage(await loadBots(user.id), isPartial(request));
     return reply.type("text/html").send(html);
   });
 
   app.get("/instances", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
     return reply
       .type("text/html")
-      .send(instancesPage(await loadBots(), query.msg, query.t === "err", isPartial(request)));
+      .send(instancesPage(await loadBots(user.id), query.msg, query.t === "err", isPartial(request), user.name));
   });
 
   app.get("/instances/new", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
-    return reply.type("text/html").send(newInstancePage(query.msg, query.t === "err", isPartial(request)));
+    return reply
+      .type("text/html")
+      .send(newInstancePage(query.msg, query.t === "err", isPartial(request), user.name));
   });
 
   app.get("/settings", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
-    const status = await getApiKeyStatus();
-    const model = await getOpenAIModel();
+    const status = await getApiKeyStatus(user.id);
+    const model = await getOpenAIModel(user.id);
     return reply.type("text/html").send(
       settingsPage(
         {
@@ -264,18 +324,20 @@ export async function registerPanelRoutes(
           source: status.source,
           model
         },
-        isPartial(request)
+        isPartial(request),
+        user.name
       )
     );
   });
 
   app.post("/settings", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     try {
       const body = z
         .object({ openaiApiKey: z.string().optional(), openaiModel: z.string().optional() })
         .parse(request.body ?? {});
-      await updateOpenAISettings({ apiKey: body.openaiApiKey, model: body.openaiModel });
+      await updateOpenAISettings(user.id, { apiKey: body.openaiApiKey, model: body.openaiModel });
       return reply.redirect(flashRedirect("/settings", "Configurações salvas!"));
     } catch (error) {
       return reply.redirect(flashRedirect("/settings", `Erro: ${errorMessage(error)}`, "err"));
@@ -295,11 +357,13 @@ export async function registerPanelRoutes(
   });
 
   app.post("/bots", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     try {
       const fields: Record<string, string> = {};
       const previewUploads: string[] = [];
       const deliveryUploads: string[] = [];
+      let avatarUrl = "";
 
       for await (const part of request.parts()) {
         if (part.type === "file") {
@@ -307,6 +371,7 @@ export async function registerPanelRoutes(
           const url = await saveUploadedFile(part.file, part.filename);
           if (part.fieldname === "previewFiles") previewUploads.push(url);
           if (part.fieldname === "deliveryFiles") deliveryUploads.push(url);
+          if (part.fieldname === "avatarFile") avatarUrl = url;
           continue;
         }
         fields[part.fieldname] = String(part.value || "");
@@ -318,7 +383,8 @@ export async function registerPanelRoutes(
           token: z.string().min(20),
           prompt: z.string().min(1),
           pixKey: z.string().default(""),
-          messageDelayMs: z.coerce.number().default(1500),
+          pixRecipientName: z.string().optional(),
+          messageDelayMs: z.coerce.number().default(2500),
           active: z.enum(["true", "false"]).default("true"),
           paymentMethod: z.enum(["pix", "laranjinha"]).default("pix"),
           laranjinhaApiKey: z.string().optional(),
@@ -328,16 +394,18 @@ export async function registerPanelRoutes(
         })
         .parse(fields);
 
-      const bots = await loadBots();
-      bots.push({
+      await upsertBot({
         id: randomUUID(),
+        userId: user.id,
         name: body.name,
         token: body.token,
         prompt: body.prompt,
         pixKey: body.pixKey || "nao-configurado",
+        pixRecipientName: body.pixRecipientName?.trim() || body.name,
         messageDelayMs: body.messageDelayMs,
         previewMediaUrls: previewUploads,
         deliveryMediaUrls: deliveryUploads,
+        avatarUrl,
         active: body.active === "true",
         paymentMethod: body.paymentMethod,
         laranjinhaApiKeyEncrypted: body.laranjinhaApiKey?.trim()
@@ -348,7 +416,6 @@ export async function registerPanelRoutes(
         telegramGroupLink: body.telegramGroupLink.trim()
       });
 
-      await saveBots(bots);
       hooks.restartBots();
       return reply.redirect(flashRedirect("/instances", "Instância salva! Ativando..."));
     } catch (error) {
@@ -357,12 +424,30 @@ export async function registerPanelRoutes(
     }
   });
 
-  app.post("/bots/:id/delete", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+  app.post("/bots/:id/toggle", async (request, reply) => {
+    const user = requireUser(request, reply);
+    if (!user) return;
     try {
       const params = z.object({ id: z.string().min(1) }).parse(request.params);
-      const bots = await loadBots();
-      await saveBots(bots.filter((b) => b.id !== params.id));
+      const bot = await getBotById(params.id, user.id);
+      if (!bot) return reply.redirect(flashRedirect("/", "Bot nao encontrado.", "err"));
+      bot.active = !bot.active;
+      await upsertBot(bot);
+      hooks.restartBots();
+      return reply.redirect(
+        flashRedirect("/", bot.active ? "Bot ativado." : "Bot pausado — nao responde no Telegram.")
+      );
+    } catch (error) {
+      return reply.redirect(flashRedirect("/", `Erro: ${errorMessage(error)}`, "err"));
+    }
+  });
+
+  app.post("/bots/:id/delete", async (request, reply) => {
+    const user = requireUser(request, reply);
+    if (!user) return;
+    try {
+      const params = z.object({ id: z.string().min(1) }).parse(request.params);
+      await deleteBot(params.id, user.id);
       hooks.restartBots();
       return reply.redirect(flashRedirect("/", "Bot removido."));
     } catch (error) {
@@ -371,7 +456,8 @@ export async function registerPanelRoutes(
   });
 
   app.post("/restart", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
+    const user = requireUser(request, reply);
+    if (!user) return;
     hooks.restartBots();
     return reply.redirect(flashRedirect("/", "Bots reiniciando..."));
   });

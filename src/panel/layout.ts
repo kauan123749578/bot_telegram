@@ -28,7 +28,13 @@ function navItem(href: string, label: string, icon: string, active: boolean) {
   return `<a href="${href}" class="${cls}" data-nav>${icon} ${label}</a>`;
 }
 
-export function appLayout(title: string, active: NavId, body: string, partial = false) {
+export function appLayout(
+  title: string,
+  active: NavId,
+  body: string,
+  partial = false,
+  userName = "Usuario"
+) {
   if (partial) return body;
 
   const is = (id: NavId) => active === id;
@@ -76,8 +82,8 @@ export function appLayout(title: string, active: NavId, body: string, partial = 
             <div id="bell-menu" class="bell-menu"></div>
           </div>
           <div class="user-pill">
-            <div class="user-avatar">KS</div>
-            <div><div class="name">Kauan Store</div><div class="role">Administrador</div></div>
+            <div class="user-avatar">${escapeHtml(userName.slice(0, 2).toUpperCase())}</div>
+            <div><div class="name">${escapeHtml(userName)}</div><div class="role">Conta ativa</div></div>
           </div>
         </div>
       </header>

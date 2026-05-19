@@ -118,6 +118,9 @@ export async function initDatabase() {
 
   await migrateFromJsonFiles();
 
+  const { initUsersSchema } = await import("./users.js");
+  await initUsersSchema();
+
   const { initEventsSchema } = await import("./events.js");
   await initEventsSchema();
 

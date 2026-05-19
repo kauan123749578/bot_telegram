@@ -16,6 +16,8 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().default(""),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
   PANEL_PASSWORD: z.string().min(6).default("troque-essa-senha"),
+  ADMIN_EMAIL: z.string().email().optional(),
+  ADMIN_NAME: z.string().default("Administrador"),
   SESSION_SECRET: z.string().min(16).optional(),
   PORT: z.coerce.number().default(3000),
   TELEGRAM_BOT_TOKEN: z.string().default(""),

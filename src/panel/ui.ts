@@ -96,6 +96,13 @@ function topProducts(ranking: BotSalesRank[]) {
   return topBotsRankingHtml(ranking);
 }
 
+function botAvatar(bot: BotConfig) {
+  if (bot.avatarUrl) {
+    return `<div class="bot-av has-photo" style="background-image:url('${escapeHtml(bot.avatarUrl)}')"></div>`;
+  }
+  return `<div class="bot-av">${botInitials(bot.name)}</div>`;
+}
+
 function instancesTable(bots: BotConfig[]) {
   if (bots.length === 0) {
     return `<div class="empty">Nenhuma instância ainda. <a href="/instances/new" style="color:var(--primary)">Criar primeira instância</a></div>`;
@@ -112,7 +119,7 @@ function instancesTable(bots: BotConfig[]) {
       <tr>
         <td>
           <div class="bot-cell">
-            <div class="bot-av">${botInitials(bot.name)}</div>
+            ${botAvatar(bot)}
             <div>
               <div class="title">${escapeHtml(bot.name)}</div>
               <div class="sub">${escapeHtml(botHandle(bot.name))}</div>
@@ -130,6 +137,11 @@ function instancesTable(bots: BotConfig[]) {
         <td><span class="metric">${bot.deliveryMediaUrls.length}</span></td>
         <td>
           <div class="row-actions">
+            <form method="post" action="/bots/${bot.id}/toggle">
+              <button type="submit" class="btn btn-secondary" style="padding:6px 10px;font-size:0.72rem">
+                ${bot.active ? "Pausar" : "Ativar"}
+              </button>
+            </form>
             <form method="post" action="/bots/${bot.id}/delete" onsubmit="return confirm('Remover esta instância?')">
               <button type="submit" class="btn-icon danger" title="Remover">${icons.trash}</button>
             </form>
@@ -166,14 +178,20 @@ export function loginPage(message = "") {
     <div class="login-form">
       <div class="login-box">
         <h2>Bem-vindo de volta</h2>
-        <p style="color:var(--muted);margin-bottom:24px">Entre com a senha do painel (Railway).</p>
+        <p style="color:var(--muted);margin-bottom:24px">Cada cliente tem login e painel separado.</p>
         ${message ? alertHtml(message, "error") : ""}
         <form method="post" action="/login">
+          <label class="field">E-mail
+            <input name="email" type="email" placeholder="voce@email.com" required autofocus />
+          </label>
           <label class="field">Senha
-            <input name="password" type="password" placeholder="••••••••" required autofocus />
+            <input name="password" type="password" placeholder="••••••••" required />
           </label>
           <button type="submit" class="btn btn-primary btn-block" style="margin-top:8px">Entrar no painel</button>
         </form>
+        <p style="margin-top:16px;text-align:center;font-size:0.85rem;color:var(--muted)">
+          Nao tem conta? <a href="/register" style="color:var(--primary)">Criar conta</a>
+        </p>
       </div>
     </div>
   </div>
@@ -186,7 +204,8 @@ export function dashboardPage(
   data: DashboardData,
   message = "",
   isError = false,
-  partial = false
+  partial = false,
+  userName = "Usuario"
 ) {
   const active = bots.filter((b) => b.active).length;
   const previews = bots.reduce((s, b) => s + b.previewMediaUrls.length, 0);
@@ -272,10 +291,16 @@ export function dashboardPage(
       </div>
     </div>`;
 
-  return appLayout("Dashboard", "dashboard", body, partial);
+  return appLayout("Dashboard", "dashboard", body, partial, userName);
 }
 
-export function instancesPage(bots: BotConfig[], message = "", isError = false, partial = false) {
+export function instancesPage(
+  bots: BotConfig[],
+  message = "",
+  isError = false,
+  partial = false,
+  userName = "Usuario"
+) {
   const body = `
     ${message ? alertHtml(message, isError ? "error" : "success") : ""}
     <div class="card" style="margin-bottom:16px">
@@ -285,10 +310,15 @@ export function instancesPage(bots: BotConfig[], message = "", isError = false, 
       <div class="card-body" style="padding:0">${instancesTable(bots)}</div>
     </div>`;
 
-  return appLayout("Instâncias", "instances", body, partial);
+  return appLayout("Instâncias", "instances", body, partial, userName);
 }
 
-export function newInstancePage(message = "", isError = false, partial = false) {
+export function newInstancePage(
+  message = "",
+  isError = false,
+  partial = false,
+  userName = "Usuario"
+) {
   const body = `
     ${message ? alertHtml(message, isError ? "error" : "success") : ""}
     <div class="card" style="max-width:900px">
@@ -308,11 +338,20 @@ export function newInstancePage(message = "", isError = false, partial = false) 
             <label class="field span-2">Token Telegram
               <input name="token" placeholder="123456789:ABC..." required autocomplete="off" />
             </label>
+            <label class="field span-2">Foto de perfil do bot
+              <div class="dropzone">
+                <p style="color:var(--muted);margin-bottom:8px">${icons.upload} Imagem quadrada (JPG/PNG)</p>
+                <input name="avatarFile" type="file" accept="image/*" />
+              </div>
+            </label>
             <label class="field">Chave Pix
               <input name="pixKey" placeholder="CPF, email ou telefone" required />
             </label>
-            <label class="field">Delay (ms)
-              <input name="messageDelayMs" type="number" value="1500" min="0" />
+            <label class="field">Nome do recebedor Pix
+              <input name="pixRecipientName" placeholder="Nome que aparece no comprovante" />
+            </label>
+            <label class="field">Delay resposta (ms)
+              <input name="messageDelayMs" type="number" value="2500" min="800" />
             </label>
             <label class="field span-2" id="prompt">Prompt / persona da IA
               <textarea name="prompt" required>Voce atende leads no Telegram de forma simpatica, curta e persuasiva. Quando pedirem previa, ofereca. Quando pedirem Pix, informe a chave.</textarea>
@@ -351,7 +390,43 @@ export function newInstancePage(message = "", isError = false, partial = false) 
       </div>
     </div>`;
 
-  return appLayout("Nova Instância", "new", body, partial);
+  return appLayout("Nova Instância", "new", body, partial, userName);
+}
+
+export function registerPage(message = "") {
+  return `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Criar conta · BotManager</title>
+  <style>${globalStyles}</style>
+</head>
+<body>
+  <div class="login-page">
+    <div class="login-hero">
+      <div class="sidebar-brand" style="padding:0 0 24px"><div class="logo">BM</div> BotManager</div>
+      <h1>Seu painel de bots com IA</h1>
+      <p style="color:var(--text-2);line-height:1.6;max-width:420px">Crie sua conta e gerencie bots Telegram com Pix e entrega automática.</p>
+    </div>
+    <div class="login-form">
+      <div class="login-box">
+        <h2>Criar conta</h2>
+        ${message ? alertHtml(message, "error") : ""}
+        <form method="post" action="/register">
+          <label class="field">Seu nome<input name="name" required /></label>
+          <label class="field">E-mail<input name="email" type="email" required /></label>
+          <label class="field">Senha<input name="password" type="password" minlength="6" required /></label>
+          <button type="submit" class="btn btn-primary btn-block">Criar conta</button>
+        </form>
+        <p style="margin-top:16px;text-align:center;font-size:0.85rem;color:var(--muted)">
+          Ja tem conta? <a href="/login" style="color:var(--primary)">Entrar</a>
+        </p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
 }
 
 export function settingsPage(
@@ -363,7 +438,8 @@ export function settingsPage(
     source: string;
     model: string;
   },
-  partial = false
+  partial = false,
+  userName = "Usuario"
 ) {
   const statusClass = input.configured ? "badge-online" : "badge-paused";
   const statusText = input.configured ? `Conectado (${input.source})` : "Não configurado";
@@ -399,5 +475,5 @@ export function settingsPage(
       </div>
     </div>`;
 
-  return appLayout("Configurações", "settings", body, partial);
+  return appLayout("Configurações", "settings", body, partial, userName);
 }

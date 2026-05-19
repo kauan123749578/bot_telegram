@@ -16,7 +16,13 @@ import { initDatabase, useDatabase } from "./db/index.js";
 import { logMessage, logReceipt, logSale, upsertLead } from "./db/events.js";
 import { decryptSecret } from "./lib/crypto.js";
 import { createLaranjinhaCharge } from "./lib/laranjinha.js";
-import { getOpenAIApiKey, getOpenAIModel } from "./lib/settings.js";
+import { humanPause } from "./lib/humanize.js";
+import {
+  validateReceiptFromImage,
+  validateReceiptFromText,
+  type ReceiptVerdict
+} from "./lib/receipt-validator.js";
+import { getOpenAI, getOpenAIModel } from "./lib/settings.js";
 import { registerPanelRoutes } from "./panel/routes.js";
 
 const BOT_LAUNCH_TIMEOUT_MS = 20_000;
@@ -27,20 +33,25 @@ type RuntimeBot = {
   historyByChat: Map<number, OpenAI.Chat.Completions.ChatCompletionMessageParam[]>;
 };
 
-type ReceiptAnalysis = {
-  paid: boolean;
-  confidence: number;
-  reason: string;
-};
-
 const runningBots = new Map<string, RuntimeBot>();
 
-async function getOpenAI() {
-  return new OpenAI({ apiKey: await getOpenAIApiKey() });
+function receiptContext(config: BotConfig) {
+  return {
+    pixKey: config.pixKey,
+    recipientName: config.pixRecipientName || config.name,
+    expectedAmountCents: config.productPriceCents,
+    userId: config.userId
+  };
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+async function humanReply(
+  ctx: { chat: { id: number }; reply: (msg: string) => Promise<unknown>; telegram: Telegraf["telegram"] },
+  config: BotConfig,
+  message: string
+) {
+  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
+  await humanPause(config.messageDelayMs);
+  return ctx.reply(message);
 }
 
 function isUploadedMedia(value: string) {
@@ -97,83 +108,16 @@ function wantsPix(text: string) {
   return /pix|pagar|pagamento|valor|preco|preço|comprar|acesso|liberar/i.test(text);
 }
 
-function parseReceiptAnalysis(content: string): ReceiptAnalysis {
-  const parsed = JSON.parse(content || "{}") as {
-    paid?: boolean;
-    confidence?: number;
-    reason?: string;
-  };
-  return {
-    paid: Boolean(parsed.paid && (parsed.confidence ?? 0) >= 0.65),
-    confidence: parsed.confidence ?? 0,
-    reason: parsed.reason || "Sem justificativa retornada pela IA."
-  };
-}
-
-async function analyzeReceiptImage(input: { imageUrl: string; pixKey: string }) {
-  const openai = await getOpenAI();
-  const model = await getOpenAIModel();
-  const completion = await openai.chat.completions.create({
-    model,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "system",
-        content:
-          "Voce analisa comprovantes Pix brasileiros. Responda apenas JSON valido com: paid boolean, confidence number de 0 a 1, reason string."
-      },
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Verifique se esta imagem parece um comprovante Pix pago para a chave: ${input.pixKey}. Aprove somente com pagamento concluido.`
-          },
-          { type: "image_url", image_url: { url: input.imageUrl } }
-        ]
-      }
-    ]
-  });
-  return parseReceiptAnalysis(completion.choices[0]?.message.content || "{}");
-}
-
-async function analyzeReceiptText(input: { text: string; pixKey: string }) {
-  const openai = await getOpenAI();
-  const model = await getOpenAIModel();
-  const completion = await openai.chat.completions.create({
-    model,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "system",
-        content:
-          "Voce analisa textos de comprovantes Pix. Responda apenas JSON: paid, confidence, reason."
-      },
-      {
-        role: "user",
-        content: `Verifique se este texto e comprovante Pix pago para ${input.pixKey}:\n\n${input.text.slice(0, 12000)}`
-      }
-    ]
-  });
-  return parseReceiptAnalysis(completion.choices[0]?.message.content || "{}");
-}
-
-async function analyzeReceiptPdf(input: { pdfUrl: string; pixKey: string }) {
+async function analyzeReceiptPdf(input: { pdfUrl: string; config: BotConfig }): Promise<ReceiptVerdict> {
   const buffer = await downloadBuffer(input.pdfUrl);
   const parser = new PDFParse({ data: buffer });
   const parsed = await parser.getText();
   await parser.destroy();
   const text = parsed.text.trim();
   if (!text) {
-    return {
-      paid: false,
-      confidence: 0,
-      reason: "Nao consegui extrair texto do PDF."
-    };
+    return { paid: false, confidence: 0, reason: "Nao consegui extrair texto do PDF." };
   }
-  return analyzeReceiptText({ text, pixKey: input.pixKey });
+  return validateReceiptFromText({ text, ...receiptContext(input.config) });
 }
 
 async function deliverProduct(input: {
@@ -192,7 +136,7 @@ async function deliverProduct(input: {
   });
 
   await input.reply(`Pagamento aprovado! Liberando seu acesso...`);
-  await sleep(input.config.messageDelayMs);
+  await humanPause(input.config.messageDelayMs);
 
   if (input.config.telegramGroupLink) {
     await input.reply(
@@ -214,7 +158,7 @@ async function deliverProduct(input: {
 }
 
 async function handleReceiptResult(input: {
-  result: ReceiptAnalysis;
+  result: ReceiptVerdict;
   chatId: number;
   reply: (message: string) => Promise<unknown>;
   bot: Telegraf;
@@ -251,7 +195,7 @@ async function sendPaymentInstructions(
   ctx: { reply: (msg: string) => Promise<unknown>; chat: { id: number } },
   config: BotConfig
 ) {
-  await sleep(config.messageDelayMs);
+  await humanPause(config.messageDelayMs);
 
   if (config.paymentMethod === "laranjinha" && config.laranjinhaApiKeyEncrypted) {
     try {
@@ -290,7 +234,6 @@ async function startBot(config: BotConfig) {
       username: from?.username,
       displayName: [from?.first_name, from?.last_name].filter(Boolean).join(" ")
     });
-    await ctx.reply("Oi. Me manda uma mensagem que eu te atendo por aqui.");
   });
 
   bot.command("pix", async (ctx) => sendPaymentInstructions(ctx, config));
@@ -299,8 +242,8 @@ async function startBot(config: BotConfig) {
     try {
       const photos = ctx.message.photo;
       const fileUrl = await ctx.telegram.getFileLink(photos[photos.length - 1].file_id);
-      await ctx.reply("Recebi seu comprovante. Vou conferir agora.");
-      const result = await analyzeReceiptImage({ imageUrl: fileUrl.href, pixKey: config.pixKey });
+      await humanReply(ctx, config, "Recebi seu comprovante. Vou conferir agora.");
+      const result = await validateReceiptFromImage({ imageUrl: fileUrl.href, ...receiptContext(config) });
       await handleReceiptResult({
         result,
         chatId: ctx.chat.id,
@@ -328,10 +271,10 @@ async function startBot(config: BotConfig) {
         return;
       }
 
-      await ctx.reply("Recebi seu comprovante. Vou conferir agora.");
+      await humanReply(ctx, config, "Recebi seu comprovante. Vou conferir agora.");
       const result = isPdfFile(fileName, mimeType)
-        ? await analyzeReceiptPdf({ pdfUrl: fileUrl.href, pixKey: config.pixKey })
-        : await analyzeReceiptImage({ imageUrl: fileUrl.href, pixKey: config.pixKey });
+        ? await analyzeReceiptPdf({ pdfUrl: fileUrl.href, config })
+        : await validateReceiptFromImage({ imageUrl: fileUrl.href, ...receiptContext(config) });
 
       await handleReceiptResult({
         result,
@@ -364,8 +307,7 @@ async function startBot(config: BotConfig) {
     runtime.historyByChat.set(chatId, history);
 
     if (wantsPreview(text) && config.previewMediaUrls.length > 0) {
-      await sleep(config.messageDelayMs);
-      await ctx.reply("Vou te mandar uma previa.");
+      await humanReply(ctx, config, "Vou te mandar uma previa.");
       await sendMediaList(bot, chatId, config.previewMediaUrls);
       return;
     }
@@ -375,8 +317,8 @@ async function startBot(config: BotConfig) {
     }
 
     try {
-      const openai = await getOpenAI();
-      const model = await getOpenAIModel();
+      const openai = await getOpenAI(config.userId);
+      const model = await getOpenAIModel(config.userId);
       const completion = await openai.chat.completions.create({
         model,
         temperature: 0.8,
@@ -392,8 +334,7 @@ async function startBot(config: BotConfig) {
       const reply = completion.choices[0]?.message.content?.trim() || "Me chama de novo.";
       history.push({ role: "user", content: text }, { role: "assistant", content: reply });
       await logMessage({ botId: config.id, chatId, role: "assistant", content: reply });
-      await sleep(config.messageDelayMs);
-      await ctx.reply(reply);
+      await humanReply(ctx, config, reply);
     } catch (error) {
       console.error(error);
       await ctx.reply("IA indisponivel. Configure a OpenAI API Key em Configuracoes no painel.");
@@ -452,6 +393,10 @@ await app.register(multipart, {
 });
 
 await initDatabase();
+if (!useDatabase()) {
+  const { initUsersSchema } = await import("./db/users.js");
+  await initUsersSchema();
+}
 await registerPanelRoutes(app, {
   restartBots: () => {
     void restartBots().catch((error) => console.error("Erro ao reiniciar bots:", error));

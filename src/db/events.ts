@@ -325,37 +325,63 @@ export async function listReceipts(limit = 50) {
   return store.receipts.slice(0, limit);
 }
 
-export async function listSales(limit = 50) {
+export async function listSales(limit = 50, userId?: string) {
+  const botIds = await botIdsForUser(userId);
+  if (userId && botIds && botIds.length === 0) return [];
+
   if (useDatabase()) {
-    const { rows } = await getPool().query(
-      `SELECT s.*, b.name AS bot_name FROM sales s
-       LEFT JOIN bots b ON b.id = s.bot_id
-       ORDER BY s.created_at DESC LIMIT $1`,
-      [limit]
-    );
+    const { rows } = botIds
+      ? await getPool().query(
+          `SELECT s.*, b.name AS bot_name FROM sales s
+           LEFT JOIN bots b ON b.id = s.bot_id
+           WHERE s.bot_id = ANY($2::uuid[])
+           ORDER BY s.created_at DESC LIMIT $1`,
+          [limit, botIds]
+        )
+      : await getPool().query(
+          `SELECT s.*, b.name AS bot_name FROM sales s
+           LEFT JOIN bots b ON b.id = s.bot_id
+           ORDER BY s.created_at DESC LIMIT $1`,
+          [limit]
+        );
     return rows;
   }
   const store = await loadFileStore();
-  return store.sales.slice(0, limit);
+  const sales = botIds ? store.sales.filter((s) => botIds.includes(s.botId)) : store.sales;
+  return sales.slice(0, limit);
 }
 
-export async function salesByDay(days = 7) {
+export async function salesByDay(days = 7, userId?: string) {
+  const botIds = await botIdsForUser(userId);
+  if (userId && botIds && botIds.length === 0) return [];
+
   if (useDatabase()) {
-    const { rows } = await getPool().query<{ day: string; total: string }>(
-      `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
-              COALESCE(SUM(amount_cents), 0)::text AS total
-       FROM sales
-       WHERE created_at >= NOW() - ($1::int || ' days')::interval
-       GROUP BY 1 ORDER BY 1`,
-      [days]
-    );
+    const { rows } = botIds
+      ? await getPool().query<{ day: string; total: string }>(
+          `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
+                  COALESCE(SUM(amount_cents), 0)::text AS total
+           FROM sales
+           WHERE created_at >= NOW() - ($1::int || ' days')::interval
+             AND bot_id = ANY($2::uuid[])
+           GROUP BY 1 ORDER BY 1`,
+          [days, botIds]
+        )
+      : await getPool().query<{ day: string; total: string }>(
+          `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
+                  COALESCE(SUM(amount_cents), 0)::text AS total
+           FROM sales
+           WHERE created_at >= NOW() - ($1::int || ' days')::interval
+           GROUP BY 1 ORDER BY 1`,
+          [days]
+        );
     return rows.map((r) => ({ day: r.day, totalCents: Number(r.total) }));
   }
 
   const store = await loadFileStore();
   const map = new Map<string, number>();
   const cutoff = Date.now() - days * 86400000;
-  for (const s of store.sales) {
+  const salesRows = botIds ? store.sales.filter((s) => botIds.includes(s.botId)) : store.sales;
+  for (const s of salesRows) {
     if (new Date(s.createdAt).getTime() < cutoff) continue;
     const day = s.createdAt.slice(0, 10);
     map.set(day, (map.get(day) ?? 0) + s.amountCents);
@@ -383,11 +409,17 @@ function formatSaleSubtitle(productName: string, amountCents: number, botName: s
   return `${productName} · R$ ${reais} · ${botName || "Bot"}`;
 }
 
-export async function listRecentActivity(limit = 8): Promise<ActivityItem[]> {
+export async function listRecentActivity(limit = 8, userId?: string): Promise<ActivityItem[]> {
   const items: ActivityItem[] = [];
+  const botIds = await botIdsForUser(userId);
+  if (userId && botIds && botIds.length === 0) return [];
 
   if (useDatabase()) {
     const db = getPool();
+    const scope = botIds ? " WHERE s.bot_id = ANY($2::uuid[])" : "";
+    const scopeL = botIds ? " WHERE l.bot_id = ANY($2::uuid[])" : "";
+    const scopeR = botIds ? " AND r.bot_id = ANY($2::uuid[])" : "";
+    const params = botIds ? [limit, botIds] : [limit];
     const [sales, leads, receipts] = await Promise.all([
       db.query<{
         id: string;
@@ -397,9 +429,9 @@ export async function listRecentActivity(limit = 8): Promise<ActivityItem[]> {
         bot_name: string;
       }>(
         `SELECT s.id, s.amount_cents, s.product_name, s.created_at, COALESCE(b.name, 'Bot') AS bot_name
-         FROM sales s LEFT JOIN bots b ON b.id = s.bot_id
+         FROM sales s LEFT JOIN bots b ON b.id = s.bot_id${scope}
          ORDER BY s.created_at DESC LIMIT $1`,
-        [limit]
+        params
       ),
       db.query<{
         id: string;
@@ -409,15 +441,15 @@ export async function listRecentActivity(limit = 8): Promise<ActivityItem[]> {
         bot_name: string;
       }>(
         `SELECT l.id, l.display_name, l.username, l.last_message_at, COALESCE(b.name, 'Bot') AS bot_name
-         FROM leads l LEFT JOIN bots b ON b.id = l.bot_id
+         FROM leads l LEFT JOIN bots b ON b.id = l.bot_id${scopeL}
          ORDER BY l.last_message_at DESC LIMIT $1`,
-        [limit]
+        params
       ),
       db.query<{ id: string; created_at: string; bot_name: string }>(
         `SELECT r.id, r.created_at, COALESCE(b.name, 'Bot') AS bot_name
          FROM receipts r LEFT JOIN bots b ON b.id = r.bot_id
-         WHERE r.paid = true ORDER BY r.created_at DESC LIMIT $1`,
-        [limit]
+         WHERE r.paid = true${scopeR} ORDER BY r.created_at DESC LIMIT $1`,
+        params
       )
     ]);
 
@@ -488,24 +520,42 @@ export async function listRecentActivity(limit = 8): Promise<ActivityItem[]> {
   return items.slice(0, limit);
 }
 
-export async function salesRankingByBot(limit = 5): Promise<BotSalesRank[]> {
+export async function salesRankingByBot(limit = 5, userId?: string): Promise<BotSalesRank[]> {
   if (useDatabase()) {
-    const { rows } = await getPool().query<{
-      bot_id: string;
-      name: string;
-      sales_count: number;
-      total_cents: number;
-    }>(
-      `SELECT b.id AS bot_id, b.name,
-              COUNT(s.id)::int AS sales_count,
-              COALESCE(SUM(s.amount_cents), 0)::int AS total_cents
-       FROM bots b
-       INNER JOIN sales s ON s.bot_id = b.id
-       GROUP BY b.id, b.name
-       ORDER BY total_cents DESC, sales_count DESC
-       LIMIT $1`,
-      [limit]
-    );
+    const { rows } = userId
+      ? await getPool().query<{
+          bot_id: string;
+          name: string;
+          sales_count: number;
+          total_cents: number;
+        }>(
+          `SELECT b.id AS bot_id, b.name,
+                  COUNT(s.id)::int AS sales_count,
+                  COALESCE(SUM(s.amount_cents), 0)::int AS total_cents
+           FROM bots b
+           INNER JOIN sales s ON s.bot_id = b.id
+           WHERE b.user_id = $2
+           GROUP BY b.id, b.name
+           ORDER BY total_cents DESC, sales_count DESC
+           LIMIT $1`,
+          [limit, userId]
+        )
+      : await getPool().query<{
+          bot_id: string;
+          name: string;
+          sales_count: number;
+          total_cents: number;
+        }>(
+          `SELECT b.id AS bot_id, b.name,
+                  COUNT(s.id)::int AS sales_count,
+                  COALESCE(SUM(s.amount_cents), 0)::int AS total_cents
+           FROM bots b
+           INNER JOIN sales s ON s.bot_id = b.id
+           GROUP BY b.id, b.name
+           ORDER BY total_cents DESC, sales_count DESC
+           LIMIT $1`,
+          [limit]
+        );
     return rows.map((r) => ({
       botId: r.bot_id,
       name: r.name,
@@ -515,10 +565,11 @@ export async function salesRankingByBot(limit = 5): Promise<BotSalesRank[]> {
   }
 
   const store = await loadFileStore();
-  const bots = await (await import("../bots.js")).loadBots();
+  const bots = await (await import("../bots.js")).loadBots(userId);
   const map = new Map<string, BotSalesRank>();
+  const allowed = new Set(bots.map((b) => b.id));
 
-  for (const s of store.sales) {
+  for (const s of store.sales.filter((x) => !userId || allowed.has(x.botId))) {
     const cur = map.get(s.botId) ?? {
       botId: s.botId,
       name: bots.find((b) => b.id === s.botId)?.name ?? "Bot",
@@ -535,8 +586,8 @@ export async function salesRankingByBot(limit = 5): Promise<BotSalesRank[]> {
     .slice(0, limit);
 }
 
-export async function getLatestSale() {
-  const sales = await listSales(1);
+export async function getLatestSale(userId?: string) {
+  const sales = await listSales(1, userId);
   if (sales.length === 0) return null;
   const s = sales[0] as Record<string, unknown>;
   const id = String(s.id);
@@ -554,17 +605,32 @@ export async function getLatestSale() {
   };
 }
 
-export async function dashboardStats() {
+async function botIdsForUser(userId?: string) {
+  if (!userId) return null;
+  const { loadBots } = await import("../bots.js");
+  return (await loadBots(userId)).map((b) => b.id);
+}
+
+export async function dashboardStats(userId?: string) {
+  const botIds = await botIdsForUser(userId);
+  if (userId && botIds && botIds.length === 0) {
+    return { leads: 0, salesTotalCents: 0, salesCount: 0, receiptsApproved: 0, messagesToday: 0 };
+  }
+
   if (useDatabase()) {
     const db = getPool();
+    const scope = botIds ? " WHERE bot_id = ANY($1::uuid[])" : "";
+    const params = botIds ? [botIds] : [];
     const [leads, sales, receipts, messages] = await Promise.all([
-      db.query<{ c: string }>("SELECT COUNT(*)::text AS c FROM leads"),
+      db.query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM leads${scope}`, params),
       db.query<{ total: string; count: string }>(
-        "SELECT COALESCE(SUM(amount_cents),0)::text AS total, COUNT(*)::text AS count FROM sales"
+        `SELECT COALESCE(SUM(amount_cents),0)::text AS total, COUNT(*)::text AS count FROM sales${scope}`,
+        params
       ),
-      db.query<{ c: string }>("SELECT COUNT(*)::text AS c FROM receipts WHERE paid = true"),
+      db.query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM receipts WHERE paid = true${scope}`, params),
       db.query<{ c: string }>(
-        "SELECT COUNT(*)::text AS c FROM conversation_messages WHERE created_at >= NOW() - interval '1 day'"
+        `SELECT COUNT(*)::text AS c FROM conversation_messages WHERE created_at >= NOW() - interval '1 day'${scope}`,
+        params
       )
     ]);
     return {
@@ -578,12 +644,18 @@ export async function dashboardStats() {
 
   const store = await loadFileStore();
   const today = new Date().toISOString().slice(0, 10);
+  const inScope = <T extends { botId: string }>(rows: T[]) =>
+    botIds ? rows.filter((r) => botIds.includes(r.botId)) : rows;
+  const leads = inScope(store.leads);
+  const sales = inScope(store.sales);
+  const receipts = inScope(store.receipts);
+  const messages = inScope(store.messages);
   return {
-    leads: store.leads.length,
-    salesTotalCents: store.sales.reduce((s, x) => s + x.amountCents, 0),
-    salesCount: store.sales.length,
-    receiptsApproved: store.receipts.filter((r) => r.paid).length,
-    messagesToday: store.messages.filter((m) => m.createdAt.startsWith(today)).length
+    leads: leads.length,
+    salesTotalCents: sales.reduce((s, x) => s + x.amountCents, 0),
+    salesCount: sales.length,
+    receiptsApproved: receipts.filter((r) => r.paid).length,
+    messagesToday: messages.filter((m) => m.createdAt.startsWith(today)).length
   };
 }
 
