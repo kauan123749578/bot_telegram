@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { env, rootDir } from "./config.js";
+import { env } from "./config.js";
+import { getPool, useDatabase } from "./db/index.js";
 
-const dataDir = path.join(rootDir, "data");
+const dataDir = env.DATA_DIR;
 const uploadsDir = path.join(dataDir, "uploads");
 export const botsFile = path.join(dataDir, "bots.json");
 
@@ -53,13 +54,84 @@ export async function ensureDataFile() {
   }
 }
 
+function rowToBot(row: {
+  id: string;
+  name: string;
+  token: string;
+  prompt: string;
+  pix_key: string;
+  message_delay_ms: number;
+  preview_media_urls: string[] | string;
+  delivery_media_urls: string[] | string;
+  active: boolean;
+}): BotConfig {
+  return {
+    id: row.id,
+    name: row.name,
+    token: row.token,
+    prompt: row.prompt,
+    pixKey: row.pix_key,
+    messageDelayMs: row.message_delay_ms,
+    previewMediaUrls:
+      typeof row.preview_media_urls === "string"
+        ? JSON.parse(row.preview_media_urls)
+        : row.preview_media_urls,
+    deliveryMediaUrls:
+      typeof row.delivery_media_urls === "string"
+        ? JSON.parse(row.delivery_media_urls)
+        : row.delivery_media_urls,
+    active: row.active
+  };
+}
+
 export async function loadBots() {
+  if (useDatabase()) {
+    const { rows } = await getPool().query(
+      `SELECT id, name, token, prompt, pix_key, message_delay_ms, preview_media_urls, delivery_media_urls, active
+       FROM bots ORDER BY created_at ASC`
+    );
+    return rows.map(rowToBot);
+  }
+
   await ensureDataFile();
   const raw = await fs.readFile(botsFile, "utf8");
   return JSON.parse(raw) as BotConfig[];
 }
 
 export async function saveBots(bots: BotConfig[]) {
+  if (useDatabase()) {
+    const db = getPool();
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM bots");
+      for (const bot of bots) {
+        await client.query(
+          `INSERT INTO bots (id, name, token, prompt, pix_key, message_delay_ms, preview_media_urls, delivery_media_urls, active)
+           VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)`,
+          [
+            bot.id,
+            bot.name,
+            bot.token,
+            bot.prompt,
+            bot.pixKey,
+            bot.messageDelayMs,
+            JSON.stringify(bot.previewMediaUrls),
+            JSON.stringify(bot.deliveryMediaUrls),
+            bot.active
+          ]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return;
+  }
+
   await fs.mkdir(dataDir, { recursive: true });
   await fs.writeFile(botsFile, JSON.stringify(bots, null, 2));
 }

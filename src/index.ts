@@ -12,8 +12,11 @@ import {
   type BotConfig
 } from "./bots.js";
 import { env } from "./config.js";
+import { initDatabase } from "./db/index.js";
 import { getOpenAIApiKey, getOpenAIModel } from "./lib/settings.js";
 import { registerPanelRoutes } from "./panel/routes.js";
+
+const BOT_LAUNCH_TIMEOUT_MS = 20_000;
 
 type RuntimeBot = {
   config: BotConfig;
@@ -297,22 +300,46 @@ async function startBot(config: BotConfig) {
 
   bot.catch((error) => console.error(`Erro no bot ${config.name}:`, error));
 
-  await bot.launch();
+  await Promise.race([
+    bot.launch(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout ao conectar no Telegram")), BOT_LAUNCH_TIMEOUT_MS)
+    )
+  ]);
   runningBots.set(config.id, runtime);
   console.log(`Bot ativo: ${config.name}`);
 }
 
-async function restartBots() {
-  for (const runtime of runningBots.values()) {
-    runtime.bot.stop("restart");
+let restartInProgress = false;
+
+export async function restartBots() {
+  if (restartInProgress) {
+    console.log("[bots] Reinicio ja em andamento, ignorando...");
+    return;
   }
-  runningBots.clear();
-  for (const config of await loadBots()) {
-    try {
-      await startBot(config);
-    } catch (error) {
-      console.error(`Nao foi possivel iniciar ${config.name}:`, error);
+  restartInProgress = true;
+  try {
+    await Promise.all(
+      [...runningBots.values()].map(async (runtime) => {
+        try {
+          runtime.bot.stop("restart");
+        } catch {
+          // ignore
+        }
+      })
+    );
+    runningBots.clear();
+
+    for (const config of await loadBots()) {
+      if (!config.active) continue;
+      try {
+        await startBot(config);
+      } catch (error) {
+        console.error(`Nao foi possivel iniciar ${config.name}:`, error);
+      }
     }
+  } finally {
+    restartInProgress = false;
   }
 }
 
@@ -322,13 +349,18 @@ await app.register(multipart, {
   limits: { fileSize: 50 * 1024 * 1024, files: 20 }
 });
 
-await registerPanelRoutes(app, { restartBots });
+await initDatabase();
+await registerPanelRoutes(app, {
+  restartBots: () => {
+    void restartBots().catch((error) => console.error("Erro ao reiniciar bots:", error));
+  }
+});
 
 await app.listen({ port: env.PORT, host: "0.0.0.0" });
 console.log(`Painel: http://localhost:${env.PORT}`);
 
 await ensureDataFile();
-restartBots().catch((error) => console.error("Erro ao iniciar bots:", error));
+void restartBots().catch((error) => console.error("Erro ao iniciar bots:", error));
 
 process.once("SIGINT", () => {
   for (const runtime of runningBots.values()) runtime.bot.stop("SIGINT");

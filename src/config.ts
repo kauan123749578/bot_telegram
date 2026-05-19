@@ -20,7 +20,9 @@ const envSchema = z.object({
   PIX_KEY: z.string().default(""),
   MESSAGE_DELAY_MS: z.coerce.number().default(1500),
   PREVIEW_MEDIA_URLS: z.string().default(""),
-  DELIVERY_MEDIA_URLS: z.string().default("")
+  DELIVERY_MEDIA_URLS: z.string().default(""),
+  DATABASE_URL: z.string().default(""),
+  DATA_DIR: z.string().default("")
 });
 
 function loadEnv() {
@@ -29,7 +31,8 @@ function loadEnv() {
     const data = parsed.data;
     return {
       ...data,
-      SESSION_SECRET: data.SESSION_SECRET || `${data.PANEL_PASSWORD}-session-secret-v1`
+      SESSION_SECRET: data.SESSION_SECRET || `${data.PANEL_PASSWORD}-session-secret-v1`,
+      DATA_DIR: data.DATA_DIR || path.join(rootDir, "data")
     };
   }
 

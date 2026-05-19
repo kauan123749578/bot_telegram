@@ -6,12 +6,12 @@ import cookie from "@fastify/cookie";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { env } from "../config.js";
+import { useDatabase } from "../db/index.js";
 import {
   loadBots,
   parseUrls,
   saveBots,
   uploadsDir,
-  type BotConfig
 } from "../bots.js";
 import {
   clearSessionCookie,
@@ -51,9 +51,24 @@ function mimeTypeFromPath(filePath: string) {
   return "application/octet-stream";
 }
 
+function flashRedirect(path: string, message: string, type: "ok" | "err" = "ok") {
+  const params = new URLSearchParams({ msg: message, t: type });
+  return `${path}?${params.toString()}`;
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof z.ZodError) {
+    return error.issues.map((i) => i.message).join(", ");
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "Erro desconhecido.";
+}
+
 export async function registerPanelRoutes(
   app: FastifyInstance,
-  hooks: { restartBots: () => Promise<void> }
+  hooks: { restartBots: () => void }
 ) {
   await app.register(cookie);
 
@@ -69,7 +84,7 @@ export async function registerPanelRoutes(
   });
 
   app.get("/health", async (_request, reply) => {
-    return reply.send({ ok: true });
+    return reply.send({ ok: true, database: useDatabase() });
   });
 
   app.get("/login", async (request, reply) => {
@@ -95,16 +110,22 @@ export async function registerPanelRoutes(
 
   app.get("/", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
+    const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
     const bots = await loadBots();
-    return reply.type("text/html").send(dashboardPage(bots));
+    const isError = query.t === "err";
+    return reply.type("text/html").send(dashboardPage(bots, query.msg, isError));
   });
 
   app.get("/settings", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
+    const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
     const status = await getApiKeyStatus();
     const model = await getOpenAIModel();
+    const isError = query.t === "err";
     return reply.type("text/html").send(
       settingsPage({
+        message: query.msg,
+        messageIsError: isError,
         maskedKey: status.masked,
         configured: status.configured,
         source: status.source,
@@ -116,31 +137,26 @@ export async function registerPanelRoutes(
   app.post("/settings", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
 
-    const body = z
-      .object({
-        openaiApiKey: z.string().optional(),
-        openaiModel: z.string().optional()
-      })
-      .parse(request.body);
-
-    await updateOpenAISettings({
-      apiKey: body.openaiApiKey,
-      model: body.openaiModel
-    });
-
-    const status = await getApiKeyStatus();
-    const model = await getOpenAIModel();
-    return reply
-      .type("text/html")
-      .send(
-        settingsPage({
-          message: "Configurações salvas com sucesso.",
-          maskedKey: status.masked,
-          configured: status.configured,
-          source: status.source,
-          model
+    try {
+      const body = z
+        .object({
+          openaiApiKey: z.string().optional(),
+          openaiModel: z.string().optional()
         })
+        .parse(request.body ?? {});
+
+      await updateOpenAISettings({
+        apiKey: body.openaiApiKey,
+        model: body.openaiModel
+      });
+
+      return reply.redirect(flashRedirect("/settings", "Configurações salvas com sucesso!"));
+    } catch (error) {
+      request.log.error(error);
+      return reply.redirect(
+        flashRedirect("/settings", `Erro ao salvar: ${errorMessage(error)}`, "err")
       );
+    }
   });
 
   app.get("/uploads/:file", async (request, reply) => {
@@ -160,66 +176,79 @@ export async function registerPanelRoutes(
   app.post("/bots", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
 
-    const fields: Record<string, string> = {};
-    const previewUploads: string[] = [];
-    const deliveryUploads: string[] = [];
+    try {
+      const fields: Record<string, string> = {};
+      const previewUploads: string[] = [];
+      const deliveryUploads: string[] = [];
 
-    for await (const part of request.parts()) {
-      if (part.type === "file") {
-        if (!part.filename) continue;
-        const url = await saveUploadedFile(part.file, part.filename);
-        if (part.fieldname === "previewFiles") previewUploads.push(url);
-        if (part.fieldname === "deliveryFiles") deliveryUploads.push(url);
-        continue;
+      for await (const part of request.parts()) {
+        if (part.type === "file") {
+          if (!part.filename) continue;
+          const url = await saveUploadedFile(part.file, part.filename);
+          if (part.fieldname === "previewFiles") previewUploads.push(url);
+          if (part.fieldname === "deliveryFiles") deliveryUploads.push(url);
+          continue;
+        }
+        fields[part.fieldname] = String(part.value || "");
       }
-      fields[part.fieldname] = String(part.value || "");
+
+      const body = z
+        .object({
+          name: z.string().min(1),
+          token: z.string().min(20),
+          prompt: z.string().min(1),
+          pixKey: z.string().min(1),
+          messageDelayMs: z.coerce.number().default(1500),
+          previewMediaUrls: z.string().default(""),
+          deliveryMediaUrls: z.string().default(""),
+          active: z.enum(["true", "false"]).default("true")
+        })
+        .parse(fields);
+
+      const bots = await loadBots();
+      bots.push({
+        id: randomUUID(),
+        name: body.name,
+        token: body.token,
+        prompt: body.prompt,
+        pixKey: body.pixKey,
+        messageDelayMs: body.messageDelayMs,
+        previewMediaUrls: [...parseUrls(body.previewMediaUrls), ...previewUploads],
+        deliveryMediaUrls: [...parseUrls(body.deliveryMediaUrls), ...deliveryUploads],
+        active: body.active === "true"
+      });
+
+      await saveBots(bots);
+      hooks.restartBots();
+
+      return reply.redirect(
+        flashRedirect("/", "Bot salvo! Ativando em segundo plano (pode levar alguns segundos).")
+      );
+    } catch (error) {
+      request.log.error(error);
+      return reply.redirect(flashRedirect("/", `Erro ao salvar bot: ${errorMessage(error)}`, "err"));
     }
-
-    const body = z
-      .object({
-        name: z.string().min(1),
-        token: z.string().min(20),
-        prompt: z.string().min(1),
-        pixKey: z.string().min(1),
-        messageDelayMs: z.coerce.number().default(1500),
-        previewMediaUrls: z.string().default(""),
-        deliveryMediaUrls: z.string().default(""),
-        active: z.enum(["true", "false"]).default("true")
-      })
-      .parse(fields);
-
-    const bots = await loadBots();
-    bots.push({
-      id: randomUUID(),
-      name: body.name,
-      token: body.token,
-      prompt: body.prompt,
-      pixKey: body.pixKey,
-      messageDelayMs: body.messageDelayMs,
-      previewMediaUrls: [...parseUrls(body.previewMediaUrls), ...previewUploads],
-      deliveryMediaUrls: [...parseUrls(body.deliveryMediaUrls), ...deliveryUploads],
-      active: body.active === "true"
-    });
-
-    await saveBots(bots);
-    await hooks.restartBots();
-    return reply.type("text/html").send(dashboardPage(bots, "Bot salvo e reiniciado."));
   });
 
   app.post("/bots/:id/delete", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
 
-    const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const bots = await loadBots();
-    const nextBots = bots.filter((bot) => bot.id !== params.id);
-    await saveBots(nextBots);
-    await hooks.restartBots();
-    return reply.type("text/html").send(dashboardPage(nextBots, "Bot removido."));
+    try {
+      const params = z.object({ id: z.string().min(1) }).parse(request.params);
+      const bots = await loadBots();
+      const nextBots = bots.filter((bot) => bot.id !== params.id);
+      await saveBots(nextBots);
+      hooks.restartBots();
+      return reply.redirect(flashRedirect("/", "Bot removido."));
+    } catch (error) {
+      request.log.error(error);
+      return reply.redirect(flashRedirect("/", `Erro ao remover: ${errorMessage(error)}`, "err"));
+    }
   });
 
   app.post("/restart", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
-    await hooks.restartBots();
-    return reply.redirect("/");
+    hooks.restartBots();
+    return reply.redirect(flashRedirect("/", "Bots reiniciando em segundo plano..."));
   });
 }

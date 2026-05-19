@@ -483,6 +483,16 @@ textarea { min-height: 108px; resize: vertical; line-height: 1.5; }
 code { font-family: var(--mono); font-size: 0.85em; background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px; }
 `;
 
+const formSubmitScript = `
+<script>
+document.querySelectorAll("form").forEach((form) => {
+  form.addEventListener("submit", () => {
+    const btn = form.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.textContent = "Salvando..."; }
+  });
+});
+</script>`;
+
 function layout(title: string, body: string, nav: "dashboard" | "settings" | null) {
   if (!nav) {
     return `<!doctype html>
@@ -493,7 +503,7 @@ function layout(title: string, body: string, nav: "dashboard" | "settings" | nul
   <title>${escapeHtml(title)}</title>
   <style>${styles}</style>
 </head>
-<body>${body}</body>
+<body>${body}${formSubmitScript}</body>
 </html>`;
   }
 
@@ -537,7 +547,7 @@ function layout(title: string, body: string, nav: "dashboard" | "settings" | nul
       <main class="main">${body}</main>
     </div>
   </div>
-</body>
+${formSubmitScript}</body>
 </html>`;
 }
 
@@ -589,7 +599,7 @@ export function loginPage(message = "") {
   return layout("Login · Telegram IA", body, null);
 }
 
-export function dashboardPage(bots: BotConfig[], message = "") {
+export function dashboardPage(bots: BotConfig[], message = "", isError = false) {
   const active = bots.filter((b) => b.active).length;
   const previews = bots.reduce((s, b) => s + b.previewMediaUrls.length, 0);
   const deliveries = bots.reduce((s, b) => s + b.deliveryMediaUrls.length, 0);
@@ -635,7 +645,7 @@ export function dashboardPage(bots: BotConfig[], message = "") {
         <button type="submit" class="btn btn-secondary">${icons.sparkles} Reiniciar bots</button>
       </form>
     </header>
-    ${message ? alertHtml(message) : ""}
+    ${message ? alertHtml(message, isError ? "error" : "success") : ""}
     <section class="stats">
       <div class="stat-card"><span class="stat-label">Total</span><div class="stat-value">${bots.length}</div></div>
       <div class="stat-card accent"><span class="stat-label">Ativos</span><div class="stat-value">${active}</div></div>
@@ -708,6 +718,7 @@ export function dashboardPage(bots: BotConfig[], message = "") {
 
 export function settingsPage(input: {
   message?: string;
+  messageIsError?: boolean;
   maskedKey: string;
   configured: boolean;
   source: string;
@@ -725,7 +736,7 @@ export function settingsPage(input: {
         <p class="subtitle">API Key do ChatGPT, modelo de IA e segurança do painel.</p>
       </div>
     </header>
-    ${input.message ? alertHtml(input.message) : ""}
+    ${input.message ? alertHtml(input.message, input.messageIsError ? "error" : "success") : ""}
     <section class="split">
       <div class="panel">
         <div class="panel-head">
@@ -756,6 +767,7 @@ export function settingsPage(input: {
             <li>Ninguém acessa bots, prompts ou chaves sem autenticar.</li>
             <li>A API Key fica criptografada no servidor após salvar.</li>
             <li>Você também pode definir <code>OPENAI_API_KEY</code> direto no Railway.</li>
+            <li><strong>Produção:</strong> adicione PostgreSQL no Railway e vincule <code>DATABASE_URL</code> — sem isso, dados somem a cada deploy.</li>
           </ul>
         </div>
       </div>
