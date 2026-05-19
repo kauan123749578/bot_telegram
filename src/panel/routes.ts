@@ -24,7 +24,13 @@ import {
   getOpenAIModel,
   updateOpenAISettings
 } from "../lib/settings.js";
-import { dashboardPage, loginPage, settingsPage } from "./ui.js";
+import {
+  dashboardPage,
+  instancesPage,
+  loginPage,
+  newInstancePage,
+  settingsPage
+} from "./ui.js";
 
 async function saveUploadedFile(file: AsyncIterable<Buffer>, originalName: string) {
   await fs.mkdir(uploadsDir, { recursive: true });
@@ -114,6 +120,19 @@ export async function registerPanelRoutes(
     const bots = await loadBots();
     const isError = query.t === "err";
     return reply.type("text/html").send(dashboardPage(bots, query.msg, isError));
+  });
+
+  app.get("/instances", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
+    const bots = await loadBots();
+    return reply.type("text/html").send(instancesPage(bots, query.msg, query.t === "err"));
+  });
+
+  app.get("/instances/new", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
+    return reply.type("text/html").send(newInstancePage(query.msg, query.t === "err"));
   });
 
   app.get("/settings", async (request, reply) => {
@@ -222,7 +241,7 @@ export async function registerPanelRoutes(
       hooks.restartBots();
 
       return reply.redirect(
-        flashRedirect("/", "Bot salvo! Ativando em segundo plano (pode levar alguns segundos).")
+        flashRedirect("/instances", "Instância salva! Ativando em segundo plano.")
       );
     } catch (error) {
       request.log.error(error);
