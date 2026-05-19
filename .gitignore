@@ -1,0 +1,15 @@
+node_modules
+.next
+dist
+data
+.env
+.env.*
+!.env.example
+coverage
+*.log
+generated
+
+# Estrutura antiga do primeiro prototipo. O app simples atual fica em src/.
+apps
+packages
+services
