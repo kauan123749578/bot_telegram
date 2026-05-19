@@ -34,6 +34,7 @@ export const panelClientScript = `
 
   function pageTitle(path) {
     if (path.startsWith("/instances/new")) return "Nova Instância";
+    if (/^\/instances\/[^/]+\/edit$/.test(path)) return "Editar instância";
     const hit = NAV_PATHS.find(([p]) => p === path);
     return hit ? hit[1] : "BotManager";
   }
@@ -43,7 +44,7 @@ export const panelClientScript = `
       const href = a.getAttribute("href") || "";
       let active = href === path;
       if (!active && path.startsWith("/instances") && href === "/instances" && path !== "/instances/new") {
-        active = path === "/instances";
+        active = true;
       }
       a.classList.toggle("active", active);
     });

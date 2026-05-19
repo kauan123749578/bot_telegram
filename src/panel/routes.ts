@@ -44,6 +44,7 @@ import {
   formatRelativeTime,
   instancesPage,
   loginPage,
+  editInstancePage,
   newInstancePage,
   registerPage,
   settingsPage,
@@ -65,6 +66,42 @@ async function saveUploadedFile(file: AsyncIterable<Buffer>, originalName: strin
   await fs.writeFile(filePath, Buffer.concat(chunks));
   return `/uploads/${fileName}`;
 }
+
+async function parseBotMultipart(request: FastifyRequest) {
+  const fields: Record<string, string> = {};
+  const previewUploads: string[] = [];
+  const deliveryUploads: string[] = [];
+  let avatarUrl = "";
+
+  for await (const part of request.parts()) {
+    if (part.type === "file") {
+      if (!part.filename) continue;
+      const url = await saveUploadedFile(part.file, part.filename);
+      if (part.fieldname === "previewFiles") previewUploads.push(url);
+      if (part.fieldname === "deliveryFiles") deliveryUploads.push(url);
+      if (part.fieldname === "avatarFile") avatarUrl = url;
+      continue;
+    }
+    fields[part.fieldname] = String(part.value || "");
+  }
+
+  return { fields, previewUploads, deliveryUploads, avatarUrl };
+}
+
+const botFormFieldsSchema = z.object({
+  name: z.string().min(1),
+  token: z.string().optional(),
+  prompt: z.string().min(1),
+  pixKey: z.string().default(""),
+  pixRecipientName: z.string().optional(),
+  messageDelayMs: z.coerce.number().default(2500),
+  active: z.enum(["true", "false"]).default("true"),
+  paymentMethod: z.enum(["pix", "laranjinha"]).default("pix"),
+  laranjinhaApiKey: z.string().optional(),
+  productName: z.string().default("VIP"),
+  productPrice: z.coerce.number().default(97),
+  telegramGroupLink: z.string().default("")
+});
 
 function mimeTypeFromPath(filePath: string) {
   const ext = path.extname(filePath).toLowerCase();
@@ -308,6 +345,64 @@ export async function registerPanelRoutes(
       .send(newInstancePage(query.msg, query.t === "err", isPartial(request), user.name));
   });
 
+  app.get("/instances/:id/edit", async (request, reply) => {
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const bot = await getBotById(params.id, user.id);
+    if (!bot) return reply.redirect(flashRedirect("/instances", "Instância não encontrada.", "err"));
+    const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
+    return reply
+      .type("text/html")
+      .send(editInstancePage(bot, query.msg, query.t === "err", isPartial(request), user.name));
+  });
+
+  app.post("/instances/:id", async (request, reply) => {
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const editPath = `/instances/${params.id}/edit`;
+    try {
+      const existing = await getBotById(params.id, user.id);
+      if (!existing) return reply.redirect(flashRedirect("/instances", "Instância não encontrada.", "err"));
+
+      const { fields, previewUploads, deliveryUploads, avatarUrl } = await parseBotMultipart(request);
+      const body = botFormFieldsSchema.parse(fields);
+      const token = body.token?.trim();
+      if (token && token.length < 20) {
+        throw new Error("Token Telegram inválido.");
+      }
+
+      const laranjinhaKey = body.laranjinhaApiKey?.trim();
+      await upsertBot({
+        ...existing,
+        name: body.name,
+        token: token && token.length >= 20 ? token : existing.token,
+        prompt: body.prompt,
+        pixKey: body.pixKey || existing.pixKey,
+        pixRecipientName: body.pixRecipientName?.trim() || body.name,
+        messageDelayMs: body.messageDelayMs,
+        previewMediaUrls: [...existing.previewMediaUrls, ...previewUploads],
+        deliveryMediaUrls: [...existing.deliveryMediaUrls, ...deliveryUploads],
+        avatarUrl: avatarUrl || existing.avatarUrl,
+        active: body.active === "true",
+        paymentMethod: body.paymentMethod,
+        laranjinhaApiKeyEncrypted: laranjinhaKey
+          ? encryptSecret(laranjinhaKey)
+          : existing.laranjinhaApiKeyEncrypted,
+        productName: body.productName,
+        productPriceCents: Math.round(body.productPrice * 100),
+        telegramGroupLink: body.telegramGroupLink.trim()
+      });
+
+      hooks.restartBots();
+      return reply.redirect(flashRedirect("/instances", "Instância atualizada! Reiniciando bot..."));
+    } catch (error) {
+      request.log.error(error);
+      return reply.redirect(flashRedirect(editPath, `Erro: ${errorMessage(error)}`, "err"));
+    }
+  });
+
   app.get("/settings", async (request, reply) => {
     const user = requireUser(request, reply);
     if (!user) return;
@@ -360,38 +455,9 @@ export async function registerPanelRoutes(
     const user = requireUser(request, reply);
     if (!user) return;
     try {
-      const fields: Record<string, string> = {};
-      const previewUploads: string[] = [];
-      const deliveryUploads: string[] = [];
-      let avatarUrl = "";
-
-      for await (const part of request.parts()) {
-        if (part.type === "file") {
-          if (!part.filename) continue;
-          const url = await saveUploadedFile(part.file, part.filename);
-          if (part.fieldname === "previewFiles") previewUploads.push(url);
-          if (part.fieldname === "deliveryFiles") deliveryUploads.push(url);
-          if (part.fieldname === "avatarFile") avatarUrl = url;
-          continue;
-        }
-        fields[part.fieldname] = String(part.value || "");
-      }
-
-      const body = z
-        .object({
-          name: z.string().min(1),
-          token: z.string().min(20),
-          prompt: z.string().min(1),
-          pixKey: z.string().default(""),
-          pixRecipientName: z.string().optional(),
-          messageDelayMs: z.coerce.number().default(2500),
-          active: z.enum(["true", "false"]).default("true"),
-          paymentMethod: z.enum(["pix", "laranjinha"]).default("pix"),
-          laranjinhaApiKey: z.string().optional(),
-          productName: z.string().default("VIP"),
-          productPrice: z.coerce.number().default(97),
-          telegramGroupLink: z.string().default("")
-        })
+      const { fields, previewUploads, deliveryUploads, avatarUrl } = await parseBotMultipart(request);
+      const body = botFormFieldsSchema
+        .extend({ token: z.string().min(20) })
         .parse(fields);
 
       await upsertBot({

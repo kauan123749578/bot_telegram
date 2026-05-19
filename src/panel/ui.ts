@@ -1,7 +1,8 @@
 import type { BotConfig } from "../bots.js";
 import type { ActivityItem, BotSalesRank } from "../db/events.js";
+import { botInstanceForm, instancesTableHtml } from "./bot-form.js";
 import { icons } from "./icons.js";
-import { alertHtml, appLayout, botHandle, botInitials, escapeHtml } from "./layout.js";
+import { alertHtml, appLayout, escapeHtml } from "./layout.js";
 import { salesChartSvgFromData } from "./pages.js";
 import { globalStyles } from "./styles.js";
 
@@ -95,65 +96,6 @@ function activityFeed(activities: ActivityItem[]) {
 function topProducts(ranking: BotSalesRank[]) {
   return topBotsRankingHtml(ranking);
 }
-
-function botAvatar(bot: BotConfig) {
-  if (bot.avatarUrl) {
-    return `<div class="bot-av has-photo" style="background-image:url('${escapeHtml(bot.avatarUrl)}')"></div>`;
-  }
-  return `<div class="bot-av">${botInitials(bot.name)}</div>`;
-}
-
-function instancesTable(bots: BotConfig[]) {
-  if (bots.length === 0) {
-    return `<div class="empty">Nenhuma instância ainda. <a href="/instances/new" style="color:var(--primary)">Criar primeira instância</a></div>`;
-  }
-
-  return `<table class="table">
-    <thead><tr>
-      <th>Bot</th><th>Status</th><th>Leads</th><th>Prévias</th><th>Entregas</th><th></th>
-    </tr></thead>
-    <tbody>
-    ${bots
-      .map(
-        (bot) => `
-      <tr>
-        <td>
-          <div class="bot-cell">
-            ${botAvatar(bot)}
-            <div>
-              <div class="title">${escapeHtml(bot.name)}</div>
-              <div class="sub">${escapeHtml(botHandle(bot.name))}</div>
-            </div>
-          </div>
-        </td>
-        <td>
-          <span class="badge ${bot.active ? "badge-online" : "badge-paused"}">
-            <span class="badge-dot"></span>
-            ${bot.active ? "Online" : "Pausado"}
-          </span>
-        </td>
-        <td><span class="metric">—</span></td>
-        <td><span class="metric">${bot.previewMediaUrls.length}</span></td>
-        <td><span class="metric">${bot.deliveryMediaUrls.length}</span></td>
-        <td>
-          <div class="row-actions">
-            <form method="post" action="/bots/${bot.id}/toggle">
-              <button type="submit" class="btn btn-secondary" style="padding:6px 10px;font-size:0.72rem">
-                ${bot.active ? "Pausar" : "Ativar"}
-              </button>
-            </form>
-            <form method="post" action="/bots/${bot.id}/delete" onsubmit="return confirm('Remover esta instância?')">
-              <button type="submit" class="btn-icon danger" title="Remover">${icons.trash}</button>
-            </form>
-          </div>
-        </td>
-      </tr>`
-      )
-      .join("")}
-    </tbody>
-  </table>`;
-}
-
 
 export function loginPage(message = "") {
   return `<!doctype html>
@@ -256,7 +198,7 @@ export function dashboardPage(
             <button type="submit" class="btn btn-secondary" style="padding:8px 14px;font-size:0.8rem">${icons.refresh} Reiniciar</button>
           </form>
         </div>
-        <div class="card-body" style="padding:0">${instancesTable(bots)}</div>
+        <div class="card-body" style="padding:0">${instancesTableHtml(bots)}</div>
         <div style="padding:12px 20px;border-top:1px solid var(--border)">
           <a href="/instances" class="card-link">Ver todas as instâncias →</a>
         </div>
@@ -307,7 +249,7 @@ export function instancesPage(
       <div class="card-head"><h3>Todas as Instâncias (${bots.length})</h3>
         <a href="/instances/new" class="btn btn-primary" style="padding:8px 16px;font-size:0.82rem">${icons.plus} Nova</a>
       </div>
-      <div class="card-body" style="padding:0">${instancesTable(bots)}</div>
+      <div class="card-body" style="padding:0">${instancesTableHtml(bots)}</div>
     </div>`;
 
   return appLayout("Instâncias", "instances", body, partial, userName);
@@ -324,73 +266,32 @@ export function newInstancePage(
     <div class="card" style="max-width:900px">
       <div class="card-head">
         <h3>Nova Instância</h3>
-        <a href="/" class="card-link">← Voltar ao dashboard</a>
+        <a href="/instances" class="card-link">← Voltar às instâncias</a>
       </div>
-      <div class="card-body">
-        <form method="post" action="/bots" enctype="multipart/form-data">
-          <div class="form-grid">
-            <label class="field">Nome da instância
-              <input name="name" placeholder="Ex: MorenaVIP" required />
-            </label>
-            <label class="field">Status
-              <select name="active"><option value="true">Online</option><option value="false">Pausado</option></select>
-            </label>
-            <label class="field span-2">Token Telegram
-              <input name="token" placeholder="123456789:ABC..." required autocomplete="off" />
-            </label>
-            <label class="field span-2">Foto de perfil do bot
-              <div class="dropzone">
-                <p style="color:var(--muted);margin-bottom:8px">${icons.upload} Imagem quadrada (JPG/PNG)</p>
-                <input name="avatarFile" type="file" accept="image/*" />
-              </div>
-            </label>
-            <label class="field">Chave Pix
-              <input name="pixKey" placeholder="CPF, email ou telefone" required />
-            </label>
-            <label class="field">Nome do recebedor Pix
-              <input name="pixRecipientName" placeholder="Nome que aparece no comprovante" />
-            </label>
-            <label class="field">Delay resposta (ms)
-              <input name="messageDelayMs" type="number" value="2500" min="800" />
-            </label>
-            <label class="field span-2" id="prompt">Prompt / persona da IA
-              <textarea name="prompt" required>Voce atende leads no Telegram de forma simpatica, curta e persuasiva. Quando pedirem previa, ofereca. Quando pedirem Pix, informe a chave.</textarea>
-            </label>
-            <label class="field span-2" id="midias">
-              <span>Prévias (upload)</span>
-              <div class="dropzone">
-                <p style="color:var(--muted);margin-bottom:8px">${icons.upload} Imagens, vídeos ou áudios</p>
-                <input name="previewFiles" type="file" accept="image/*,video/*,audio/*" multiple />
-              </div>
-            </label>
-            <label class="field span-2">
-              <span>Entregas após pagamento</span>
-              <div class="dropzone">
-                <p style="color:var(--muted);margin-bottom:8px">${icons.upload} Arquivos liberados após Pix aprovado</p>
-                <input name="deliveryFiles" type="file" accept="image/*,video/*,audio/*,application/pdf" multiple />
-              </div>
-            </label>
-            <label class="field">Forma de pagamento
-              <select name="paymentMethod">
-                <option value="pix">Pix manual (chave)</option>
-                <option value="laranjinha">Gateway Laranjinha</option>
-              </select>
-            </label>
-            <label class="field">API Key Laranjinha <small style="color:var(--muted)">se gateway</small>
-              <input name="laranjinhaApiKey" type="password" placeholder="sua chave API" autocomplete="off" />
-            </label>
-            <label class="field">Produto / plano<input name="productName" value="VIP Gold" required /></label>
-            <label class="field">Preço (R$)<input name="productPrice" type="number" step="0.01" min="1" value="97" required /></label>
-            <label class="field span-2">Link do grupo Telegram (entrega após pagamento)
-              <input name="telegramGroupLink" placeholder="https://t.me/+seu_grupo_vip" />
-            </label>
-          </div>
-          <button type="submit" class="btn btn-primary btn-block" style="margin-top:8px">Salvar e ativar instância</button>
-        </form>
-      </div>
+      <div class="card-body">${botInstanceForm("new")}</div>
     </div>`;
 
   return appLayout("Nova Instância", "new", body, partial, userName);
+}
+
+export function editInstancePage(
+  bot: BotConfig,
+  message = "",
+  isError = false,
+  partial = false,
+  userName = "Usuario"
+) {
+  const body = `
+    ${message ? alertHtml(message, isError ? "error" : "success") : ""}
+    <div class="card" style="max-width:900px">
+      <div class="card-head">
+        <h3>Editar — ${escapeHtml(bot.name)}</h3>
+        <a href="/instances" class="card-link">← Voltar às instâncias</a>
+      </div>
+      <div class="card-body">${botInstanceForm("edit", bot)}</div>
+    </div>`;
+
+  return appLayout(`Editar ${bot.name}`, "instances", body, partial, userName);
 }
 
 export function registerPage(message = "") {
