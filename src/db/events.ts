@@ -619,17 +619,21 @@ export async function dashboardStats(userId?: string) {
 
   if (useDatabase()) {
     const db = getPool();
-    const scope = botIds ? " WHERE bot_id = ANY($1::uuid[])" : "";
+    const scopeWhere = botIds ? " WHERE bot_id = ANY($1::uuid[])" : "";
+    const scopeAnd = botIds ? " AND bot_id = ANY($1::uuid[])" : "";
     const params = botIds ? [botIds] : [];
     const [leads, sales, receipts, messages] = await Promise.all([
-      db.query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM leads${scope}`, params),
+      db.query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM leads${scopeWhere}`, params),
       db.query<{ total: string; count: string }>(
-        `SELECT COALESCE(SUM(amount_cents),0)::text AS total, COUNT(*)::text AS count FROM sales${scope}`,
+        `SELECT COALESCE(SUM(amount_cents),0)::text AS total, COUNT(*)::text AS count FROM sales${scopeWhere}`,
         params
       ),
-      db.query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM receipts WHERE paid = true${scope}`, params),
       db.query<{ c: string }>(
-        `SELECT COUNT(*)::text AS c FROM conversation_messages WHERE created_at >= NOW() - interval '1 day'${scope}`,
+        `SELECT COUNT(*)::text AS c FROM receipts WHERE paid = true${scopeAnd}`,
+        params
+      ),
+      db.query<{ c: string }>(
+        `SELECT COUNT(*)::text AS c FROM conversation_messages WHERE created_at >= NOW() - interval '1 day'${scopeAnd}`,
         params
       )
     ]);
