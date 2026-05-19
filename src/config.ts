@@ -6,7 +6,11 @@ import { z } from "zod";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 export const rootDir = path.resolve(dirname, "..");
 
-dotenv.config({ path: path.join(rootDir, ".env") });
+// No Railway as variaveis vem do painel (process.env), nao do arquivo .env local.
+const isRailway = Boolean(process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_ENVIRONMENT);
+if (!isRailway) {
+  dotenv.config({ path: path.join(rootDir, ".env"), quiet: true });
+}
 
 const envSchema = z.object({
   OPENAI_API_KEY: z.string().default(""),

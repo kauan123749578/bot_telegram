@@ -12,7 +12,7 @@ import {
   type BotConfig
 } from "./bots.js";
 import { env } from "./config.js";
-import { initDatabase } from "./db/index.js";
+import { initDatabase, useDatabase } from "./db/index.js";
 import { getOpenAIApiKey, getOpenAIModel } from "./lib/settings.js";
 import { registerPanelRoutes } from "./panel/routes.js";
 
@@ -357,9 +357,14 @@ await registerPanelRoutes(app, {
 });
 
 await app.listen({ port: env.PORT, host: "0.0.0.0" });
-console.log(`Painel: http://localhost:${env.PORT}`);
 
 await ensureDataFile();
+const botsOnStart = await loadBots();
+console.log("[startup] Servidor online na porta", env.PORT);
+console.log("[startup] Banco:", useDatabase() ? "PostgreSQL OK" : "arquivos locais (sem DATABASE_URL)");
+console.log("[startup] Bots cadastrados:", botsOnStart.length);
+console.log("[startup] Painel publico: https://telegramia-production.up.railway.app");
+
 void restartBots().catch((error) => console.error("Erro ao iniciar bots:", error));
 
 process.once("SIGINT", () => {
