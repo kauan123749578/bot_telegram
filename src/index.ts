@@ -8,6 +8,7 @@ import multipart from "@fastify/multipart";
 import dotenv from "dotenv";
 import Fastify from "fastify";
 import OpenAI from "openai";
+import { PDFParse } from "pdf-parse";
 import { Telegraf } from "telegraf";
 import { z } from "zod";
 
@@ -51,6 +52,12 @@ type RuntimeBot = {
   config: BotConfig;
   bot: Telegraf;
   historyByChat: Map<number, OpenAI.Chat.Completions.ChatCompletionMessageParam[]>;
+};
+
+type ReceiptAnalysis = {
+  paid: boolean;
+  confidence: number;
+  reason: string;
 };
 
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
@@ -109,6 +116,23 @@ function isVideoUrl(url: string) {
 
 function isAudioUrl(url: string) {
   return /\.(mp3|ogg|wav|m4a)(\?.*)?$/i.test(url);
+}
+
+function isPdfFile(fileName = "", mimeType = "") {
+  return mimeType === "application/pdf" || /\.pdf$/i.test(fileName);
+}
+
+function isImageFile(fileName = "", mimeType = "") {
+  return mimeType.startsWith("image/") || /\.(jpg|jpeg|png|webp)$/i.test(fileName);
+}
+
+async function downloadBuffer(url: string) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Falha ao baixar arquivo do Telegram: ${response.status}`);
+  }
+
+  return Buffer.from(await response.arrayBuffer());
 }
 
 async function ensureDataFile() {
@@ -188,10 +212,24 @@ function wantsPix(text: string) {
   return /pix|pagar|pagamento|valor|preco|preço|comprar|acesso|liberar/i.test(text);
 }
 
-async function analyzeReceipt(input: {
+function parseReceiptAnalysis(content: string): ReceiptAnalysis {
+  const parsed = JSON.parse(content || "{}") as {
+    paid?: boolean;
+    confidence?: number;
+    reason?: string;
+  };
+
+  return {
+    paid: Boolean(parsed.paid && (parsed.confidence ?? 0) >= 0.65),
+    confidence: parsed.confidence ?? 0,
+    reason: parsed.reason || "Sem justificativa retornada pela IA."
+  };
+}
+
+async function analyzeReceiptImage(input: {
   imageUrl: string;
   pixKey: string;
-}) {
+}): Promise<ReceiptAnalysis> {
   const completion = await openai.chat.completions.create({
     model: env.OPENAI_MODEL,
     temperature: 0,
@@ -219,17 +257,78 @@ async function analyzeReceipt(input: {
   });
 
   const content = completion.choices[0]?.message.content || "{}";
-  const parsed = JSON.parse(content) as {
-    paid?: boolean;
-    confidence?: number;
-    reason?: string;
-  };
+  return parseReceiptAnalysis(content);
+}
 
-  return {
-    paid: Boolean(parsed.paid && (parsed.confidence ?? 0) >= 0.65),
-    confidence: parsed.confidence ?? 0,
-    reason: parsed.reason || "Sem justificativa retornada pela IA."
-  };
+async function analyzeReceiptText(input: {
+  text: string;
+  pixKey: string;
+}): Promise<ReceiptAnalysis> {
+  const completion = await openai.chat.completions.create({
+    model: env.OPENAI_MODEL,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "Voce analisa textos extraidos de comprovantes Pix brasileiros. Responda apenas JSON valido com: paid boolean, confidence number de 0 a 1, reason string, detectedPixKey string|null, detectedAmount string|null, detectedDate string|null."
+      },
+      {
+        role: "user",
+        content: `Verifique se este texto parece um comprovante Pix pago para a chave Pix: ${input.pixKey}. Aprove somente se houver sinais claros de pagamento concluido/efetivado.\n\nTEXTO DO PDF:\n${input.text.slice(0, 12000)}`
+      }
+    ]
+  });
+
+  const content = completion.choices[0]?.message.content || "{}";
+  return parseReceiptAnalysis(content);
+}
+
+async function analyzeReceiptPdf(input: {
+  pdfUrl: string;
+  pixKey: string;
+}): Promise<ReceiptAnalysis> {
+  const buffer = await downloadBuffer(input.pdfUrl);
+  const parser = new PDFParse({ data: buffer });
+  const parsed = await parser.getText();
+  await parser.destroy();
+  const text = parsed.text.trim();
+
+  if (!text) {
+    return {
+      paid: false,
+      confidence: 0,
+      reason: "Nao consegui extrair texto do PDF. Envie uma imagem nitida do comprovante ou um PDF pesquisavel."
+    };
+  }
+
+  return analyzeReceiptText({
+    text,
+    pixKey: input.pixKey
+  });
+}
+
+async function handleReceiptResult(input: {
+  result: ReceiptAnalysis;
+  chatId: number;
+  reply: (message: string) => Promise<unknown>;
+  bot: Telegraf;
+  config: BotConfig;
+}) {
+  if (input.result.paid) {
+    await input.reply(`Pagamento aprovado. Confiança: ${Math.round(input.result.confidence * 100)}%.`);
+    await sleep(input.config.messageDelayMs);
+    await sendMediaList(input.bot, input.chatId, input.config.deliveryMediaUrls);
+    if (input.config.deliveryMediaUrls.length === 0) {
+      await input.reply("Entrega liberada, mas ainda nao tem midia de entrega cadastrada no painel.");
+    }
+    return;
+  }
+
+  await input.reply(
+    `Nao consegui aprovar automaticamente esse comprovante.\nMotivo: ${input.result.reason}\n\nVou deixar para revisao manual.`
+  );
 }
 
 async function startBot(config: BotConfig) {
@@ -247,7 +346,7 @@ async function startBot(config: BotConfig) {
   bot.start((ctx) => ctx.reply("Oi. Me manda uma mensagem que eu te atendo por aqui."));
 
   bot.command("pix", (ctx) => {
-    return ctx.reply(`Chave Pix:\n${config.pixKey}\n\nDepois envie o comprovante aqui como imagem.`);
+    return ctx.reply(`Chave Pix:\n${config.pixKey}\n\nDepois envie o comprovante aqui como imagem ou PDF.`);
   });
 
   bot.on("photo", async (ctx) => {
@@ -256,23 +355,50 @@ async function startBot(config: BotConfig) {
     const fileUrl = await ctx.telegram.getFileLink(bestPhoto.file_id);
 
     await ctx.reply("Recebi seu comprovante. Vou conferir agora.");
-    const result = await analyzeReceipt({
+    const result = await analyzeReceiptImage({
       imageUrl: fileUrl.href,
       pixKey: config.pixKey
     });
 
-    if (result.paid) {
-      await ctx.reply(`Pagamento aprovado. Confiança: ${Math.round(result.confidence * 100)}%.`);
-      await sleep(config.messageDelayMs);
-      await sendMediaList(bot, ctx.chat.id, config.deliveryMediaUrls);
-      if (config.deliveryMediaUrls.length === 0) {
-        await ctx.reply("Entrega liberada, mas ainda nao tem midia de entrega cadastrada no painel.");
-      }
-    } else {
-      await ctx.reply(
-        `Nao consegui aprovar automaticamente esse comprovante.\nMotivo: ${result.reason}\n\nVou deixar para revisao manual.`
-      );
+    await handleReceiptResult({
+      result,
+      chatId: ctx.chat.id,
+      reply: ctx.reply.bind(ctx),
+      bot,
+      config
+    });
+  });
+
+  bot.on("document", async (ctx) => {
+    const document = ctx.message.document;
+    const fileName = document.file_name || "";
+    const mimeType = document.mime_type || "";
+    const fileUrl = await ctx.telegram.getFileLink(document.file_id);
+
+    if (!isPdfFile(fileName, mimeType) && !isImageFile(fileName, mimeType)) {
+      await ctx.reply("Recebi o arquivo, mas para comprovante envie uma imagem ou PDF.");
+      return;
     }
+
+    await ctx.reply("Recebi seu comprovante. Vou conferir agora.");
+
+    const result = isPdfFile(fileName, mimeType)
+      ? await analyzeReceiptPdf({
+          pdfUrl: fileUrl.href,
+          pixKey: config.pixKey
+        })
+      : await analyzeReceiptImage({
+          imageUrl: fileUrl.href,
+          pixKey: config.pixKey
+        });
+
+    await handleReceiptResult({
+      result,
+      chatId: ctx.chat.id,
+      reply: ctx.reply.bind(ctx),
+      bot,
+      config
+    });
   });
 
   bot.on("text", async (ctx) => {
@@ -290,7 +416,7 @@ async function startBot(config: BotConfig) {
 
     if (wantsPix(text)) {
       await sleep(config.messageDelayMs);
-      await ctx.reply(`Chave Pix:\n${config.pixKey}\n\nDepois envie o comprovante aqui como imagem.`);
+      await ctx.reply(`Chave Pix:\n${config.pixKey}\n\nDepois envie o comprovante aqui como imagem ou PDF.`);
     }
 
     const completion = await openai.chat.completions.create({
