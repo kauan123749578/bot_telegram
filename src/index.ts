@@ -18,23 +18,46 @@ const dataDir = path.join(rootDir, "data");
 const uploadsDir = path.join(dataDir, "uploads");
 const botsFile = path.join(dataDir, "bots.json");
 
+// Local: le .env | Railway: use Variables no painel (nao sobe arquivo .env)
 dotenv.config({ path: path.join(rootDir, ".env") });
 
-const env = z
-  .object({
-    OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY e obrigatoria."),
-    OPENAI_MODEL: z.string().default("gpt-4o-mini"),
-    PANEL_PASSWORD: z.string().min(6).default("troque-essa-senha"),
-    PORT: z.coerce.number().default(3000),
-    TELEGRAM_BOT_TOKEN: z.string().default(""),
-    BOT_NAME: z.string().default("Bot Principal"),
-    BOT_PROMPT: z.string().default("Voce atende leads no Telegram de forma simpatica e objetiva."),
-    PIX_KEY: z.string().default(""),
-    MESSAGE_DELAY_MS: z.coerce.number().default(1500),
-    PREVIEW_MEDIA_URLS: z.string().default(""),
-    DELIVERY_MEDIA_URLS: z.string().default("")
-  })
-  .parse(process.env);
+const envSchema = z.object({
+  OPENAI_API_KEY: z.string().min(1),
+  OPENAI_MODEL: z.string().default("gpt-4o-mini"),
+  PANEL_PASSWORD: z.string().min(6).default("troque-essa-senha"),
+  PORT: z.coerce.number().default(3000),
+  TELEGRAM_BOT_TOKEN: z.string().default(""),
+  BOT_NAME: z.string().default("Bot Principal"),
+  BOT_PROMPT: z.string().default("Voce atende leads no Telegram de forma simpatica e objetiva."),
+  PIX_KEY: z.string().default(""),
+  MESSAGE_DELAY_MS: z.coerce.number().default(1500),
+  PREVIEW_MEDIA_URLS: z.string().default(""),
+  DELIVERY_MEDIA_URLS: z.string().default("")
+});
+
+function loadEnv() {
+  const parsed = envSchema.safeParse(process.env);
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  const missing = parsed.error.issues
+    .filter((issue) => issue.code === "invalid_type")
+    .map((issue) => issue.path.join("."))
+    .filter(Boolean);
+
+  console.error("\n[ERRO] Variaveis de ambiente invalidas ou faltando.\n");
+  if (missing.length > 0) {
+    console.error("Faltando:", missing.join(", "));
+  }
+  console.error("\nNo Railway: abra seu servico > Variables e adicione pelo menos:");
+  console.error("  OPENAI_API_KEY = sua chave da OpenAI");
+  console.error("  PANEL_PASSWORD = senha do painel web");
+  console.error("\nOpcional: OPENAI_MODEL, PORT, TELEGRAM_BOT_TOKEN, BOT_PROMPT, PIX_KEY\n");
+  process.exit(1);
+}
+
+const env = loadEnv();
 
 type BotConfig = {
   id: string;

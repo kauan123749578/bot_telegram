@@ -44,12 +44,30 @@ http://localhost:3000
 
 ## Deploy no Railway
 
-1. Suba este repositorio no GitHub.
-2. Crie um projeto no Railway a partir do GitHub.
-3. Configure as variaveis do `.env.example` no Railway.
-4. Deploy.
+1. Conecte o repositorio no Railway.
+2. Abra o servico > **Variables** (nao use arquivo `.env` no deploy).
+3. Adicione as variaveis abaixo.
+4. Faca o deploy.
 
-O app usa `npm start` e abre o painel na propria URL do Railway.
+### Variaveis obrigatorias
+
+| Variavel | Exemplo |
+|----------|---------|
+| `OPENAI_API_KEY` | `sk-proj-...` |
+| `PANEL_PASSWORD` | `sua-senha-forte` |
+
+### Variaveis opcionais
+
+| Variavel | Padrao |
+|----------|--------|
+| `OPENAI_MODEL` | `gpt-4o-mini` |
+| `PORT` | Railway define automaticamente; use `3000` se precisar |
+| `TELEGRAM_BOT_TOKEN` | vazio (cadastre bots pelo painel) |
+| `BOT_PROMPT` | prompt padrao |
+| `PIX_KEY` | vazio |
+| `MESSAGE_DELAY_MS` | `1500` |
+
+O app usa `npm run build` + `npm start` e abre o painel na URL publica do Railway.
 
 ## Observacoes
 
