@@ -59,13 +59,17 @@ export async function registerPanelRoutes(
 
   app.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?")[0];
-    const publicPaths = ["/login", "/uploads"];
+    const publicPaths = ["/login", "/uploads", "/health"];
     if (publicPaths.some((p) => path === p || path.startsWith(`${p}/`))) {
       return;
     }
     if (!isAuthenticated(request)) {
       return reply.redirect("/login");
     }
+  });
+
+  app.get("/health", async (_request, reply) => {
+    return reply.send({ ok: true });
   });
 
   app.get("/login", async (request, reply) => {
