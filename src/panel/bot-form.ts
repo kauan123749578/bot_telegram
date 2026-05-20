@@ -2,6 +2,18 @@ import type { BotConfig } from "../bots.js";
 import { icons } from "./icons.js";
 import { botHandle, botInitials, escapeHtml } from "./layout.js";
 
+function delayPartsFromMs(ms: number) {
+  const totalSec = Math.max(1, Math.round(ms / 1000));
+  return {
+    minutes: Math.floor(totalSec / 60),
+    seconds: totalSec % 60
+  };
+}
+
+function countAudioUrls(urls: string[]) {
+  return urls.filter((u) => /\.(mp3|m4a|wav|ogg|opus)(\?.*)?$/i.test(u)).length;
+}
+
 export function botAvatarHtml(bot: BotConfig) {
   if (bot.avatarUrl) {
     return `<div class="bot-av has-photo" style="background-image:url('${escapeHtml(bot.avatarUrl)}')"></div>`;
@@ -29,6 +41,9 @@ export function botInstanceForm(mode: "new" | "edit", bot?: BotConfig) {
   const price = isEdit ? (bot.productPriceCents / 100).toFixed(2) : "97";
   const activeTrue = !isEdit || bot.active;
   const paymentPix = !isEdit || bot.paymentMethod !== "laranjinha";
+  const delay = delayPartsFromMs(isEdit ? bot.messageDelayMs : 4000);
+  const previewAudios = isEdit ? countAudioUrls(bot.previewMediaUrls) : 0;
+  const deliveryAudios = isEdit ? countAudioUrls(bot.deliveryMediaUrls) : 0;
 
   return `
     <form method="post" action="${action}" enctype="multipart/form-data">
@@ -59,10 +74,52 @@ export function botInstanceForm(mode: "new" | "edit", bot?: BotConfig) {
         <label class="field">Nome do recebedor Pix
           <input name="pixRecipientName" value="${isEdit ? escapeHtml(bot.pixRecipientName) : ""}" placeholder="Nome no comprovante" />
         </label>
-        <label class="field">Delay entre mensagens (ms)
-          <input name="messageDelayMs" type="number" value="${isEdit ? bot.messageDelayMs : 3500}" min="1500" step="500" />
-          <small style="color:var(--muted);font-weight:400">Ex: 3500 = ~3s · 15000 = ~15s entre cada mensagem</small>
-        </label>
+        <div class="form-section span-2">
+          <div class="form-section-head">
+            <span class="form-section-icon">${icons.chat}</span>
+            <div>
+              <h4>Comportamento humano</h4>
+              <p>Pausa entre <strong>cada mensagem</strong> no Telegram (texto, áudio, foto).</p>
+            </div>
+          </div>
+          <div class="delay-grid">
+            <label class="field">
+              Minutos
+              <input name="messageDelayMinutes" type="number" min="0" max="30" value="${delay.minutes}" />
+            </label>
+            <label class="field">
+              Segundos
+              <input name="messageDelaySeconds" type="number" min="0" max="59" value="${delay.seconds}" />
+            </label>
+          </div>
+          <p class="form-hint">Ex: 1 min + 30 seg = ~90s entre cada bolha. Comprovante usa pausa extra automática.</p>
+        </div>
+
+        <div class="form-section span-2">
+          <div class="form-section-head">
+            <span class="form-section-icon">${icons.audio}</span>
+            <div>
+              <h4>Áudios e notas de voz</h4>
+              <p>MP3/M4A = áudio · OGG/OPUS = nota de voz no Telegram.</p>
+            </div>
+          </div>
+          ${isEdit ? `<p class="form-hint">Cadastrados: ${previewAudios} áudio(s) na prévia · ${deliveryAudios} na entrega</p>` : ""}
+          <label class="field">
+            Áudios de prévia
+            <div class="dropzone dropzone-audio">
+              <p style="color:var(--muted);margin-bottom:8px">${icons.upload} Envie áudios que o bot manda antes do Pix</p>
+              <input name="previewAudioFiles" type="file" accept="audio/*,.ogg,.opus,audio/ogg" multiple />
+            </div>
+          </label>
+          <label class="field" style="margin-top:12px">
+            Áudios na entrega (após pagamento)
+            <div class="dropzone dropzone-audio">
+              <p style="color:var(--muted);margin-bottom:8px">${icons.upload} Áudios liberados depois do comprovante aprovado</p>
+              <input name="deliveryAudioFiles" type="file" accept="audio/*,.ogg,.opus,audio/ogg" multiple />
+            </div>
+          </label>
+        </div>
+
         <label class="field span-2" id="prompt">Prompt / persona da IA
           <textarea name="prompt" required>${isEdit ? escapeHtml(bot.prompt) : "Voce atende leads no Telegram de forma simpatica, curta e persuasiva. Quando pedirem previa, ofereca. Quando pedirem Pix, informe a chave."}</textarea>
         </label>

@@ -536,9 +536,56 @@ button, input, textarea, select { font-family: inherit; }
 .field textarea { min-height: 110px; resize: vertical; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-grid .span-2 { grid-column: span 2; }
+.form-section {
+  padding: 18px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(61, 200, 255, 0.22);
+  background: rgba(61, 200, 255, 0.06);
+  margin-bottom: 4px;
+}
+.form-section-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.form-section-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: rgba(61, 200, 255, 0.15);
+  color: var(--primary);
+  flex-shrink: 0;
+}
+.form-section-icon svg { width: 20px; height: 20px; }
+.form-section h4 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.form-section p { font-size: 0.8rem; color: var(--text-2); line-height: 1.45; }
+.form-hint {
+  font-size: 0.76rem;
+  color: var(--muted);
+  margin-top: 8px;
+  line-height: 1.4;
+}
+.delay-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.dropzone-audio {
+  border-color: rgba(94, 228, 168, 0.35);
+  background: rgba(94, 228, 168, 0.06);
+}
 @media (max-width: 700px) {
   .form-grid { grid-template-columns: 1fr; }
   .form-grid .span-2 { grid-column: span 1; }
+  .delay-grid { grid-template-columns: 1fr; }
 }
 
 .btn {

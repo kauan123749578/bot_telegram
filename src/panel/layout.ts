@@ -1,3 +1,4 @@
+import { APP_VERSION } from "../version.js";
 import { globalStyles } from "./styles.js";
 import { icons } from "./icons.js";
 import { panelClientScript } from "./panel-client.js";
@@ -89,7 +90,7 @@ export function appLayout(
         </div>
       </header>
       <main class="content">${body}</main>
-      <footer class="footer">© 2026 BotManager. Todos os direitos reservados.</footer>
+      <footer class="footer">© 2026 BotManager · v${APP_VERSION} · <a href="/health" target="_blank" rel="noopener" style="color:var(--muted)">status</a></footer>
     </div>
   </div>
   <div id="panel-toasts" class="panel-toasts"></div>

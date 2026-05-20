@@ -77,8 +77,18 @@ async function parseBotMultipart(request: FastifyRequest) {
     if (part.type === "file") {
       if (!part.filename) continue;
       const url = await saveUploadedFile(part.file, part.filename);
-      if (part.fieldname === "previewFiles") previewUploads.push(url);
-      if (part.fieldname === "deliveryFiles") deliveryUploads.push(url);
+      if (
+        part.fieldname === "previewFiles" ||
+        part.fieldname === "previewAudioFiles"
+      ) {
+        previewUploads.push(url);
+      }
+      if (
+        part.fieldname === "deliveryFiles" ||
+        part.fieldname === "deliveryAudioFiles"
+      ) {
+        deliveryUploads.push(url);
+      }
       if (part.fieldname === "avatarFile") avatarUrl = url;
       continue;
     }
@@ -94,7 +104,8 @@ const botFormFieldsSchema = z.object({
   prompt: z.string().min(1),
   pixKey: z.string().default(""),
   pixRecipientName: z.string().optional(),
-  messageDelayMs: z.coerce.number().min(1500).default(3500),
+  messageDelayMinutes: z.coerce.number().min(0).max(30).default(0),
+  messageDelaySeconds: z.coerce.number().min(0).max(59).default(4),
   active: z.enum(["true", "false"]).default("true"),
   paymentMethod: z.enum(["pix", "laranjinha"]).default("pix"),
   laranjinhaApiKey: z.string().optional(),
@@ -102,6 +113,11 @@ const botFormFieldsSchema = z.object({
   productPrice: z.coerce.number().default(97),
   telegramGroupLink: z.string().default("")
 });
+
+function messageDelayMsFromForm(input: { messageDelayMinutes: number; messageDelaySeconds: number }) {
+  const totalSeconds = input.messageDelayMinutes * 60 + input.messageDelaySeconds;
+  return Math.max(1500, totalSeconds * 1000);
+}
 
 function mimeTypeFromPath(filePath: string) {
   const ext = path.extname(filePath).toLowerCase();
@@ -141,7 +157,8 @@ export async function registerPanelRoutes(
   });
 
   app.get("/health", async (_request, reply) => {
-    return reply.send({ ok: true, database: useDatabase() });
+    const { APP_VERSION } = await import("../version.js");
+    return reply.send({ ok: true, version: APP_VERSION, database: useDatabase() });
   });
 
   app.get("/login", async (request, reply) => {
@@ -381,7 +398,7 @@ export async function registerPanelRoutes(
         prompt: body.prompt,
         pixKey: body.pixKey || existing.pixKey,
         pixRecipientName: body.pixRecipientName?.trim() || body.name,
-        messageDelayMs: body.messageDelayMs,
+        messageDelayMs: messageDelayMsFromForm(body),
         previewMediaUrls: [...existing.previewMediaUrls, ...previewUploads],
         deliveryMediaUrls: [...existing.deliveryMediaUrls, ...deliveryUploads],
         avatarUrl: avatarUrl || existing.avatarUrl,
@@ -468,7 +485,7 @@ export async function registerPanelRoutes(
         prompt: body.prompt,
         pixKey: body.pixKey || "nao-configurado",
         pixRecipientName: body.pixRecipientName?.trim() || body.name,
-        messageDelayMs: body.messageDelayMs,
+        messageDelayMs: messageDelayMsFromForm(body),
         previewMediaUrls: previewUploads,
         deliveryMediaUrls: deliveryUploads,
         avatarUrl,
