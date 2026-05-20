@@ -4,6 +4,7 @@ export type ReceiptVerdict = {
   paid: boolean;
   confidence: number;
   reason: string;
+  userMessage?: string;
   transcript?: string;
 };
 
@@ -72,13 +73,15 @@ export async function validateReceiptTranscript(input: {
     messages: [
       {
         role: "system",
-        content: `Voce valida comprovantes Pix. Responda JSON: {"verdict":"validado"|"nao_validado","confidence":0-1,"reason":"..."}.
+        content: `Voce valida comprovantes Pix. Responda JSON:
+{"verdict":"validado"|"nao_validado","confidence":0-1,"reason":"motivo tecnico curto","user_message":"mensagem curta e humana em portugues para o cliente no Telegram, tom simpatico, sem jargao de sistema, sem palavras Motivo/Revisao manual/nao validado"}.
+
 Aprove (validado) somente se:
 1) Parecer comprovante Pix/transferencia real com valor pago;
 2) Nome do recebedor bater com "${input.recipientName}" ou variacao proxima (acentos, ordem, abreviacoes);
 3) Chave Pix "${input.pixKey}" aparecer OU o contexto indicar pagamento concluido para esse recebedor.
 ${amountHint}
-Rejeite mensagens genericas sem comprovante.`
+Rejeite mensagens genericas sem comprovante. Em rejeicao, user_message deve pedir gentilmente novo comprovante.`
       },
       {
         role: "user",
@@ -96,6 +99,7 @@ Rejeite mensagens genericas sem comprovante.`
     paid,
     confidence: paid ? confidence : Math.min(confidence, 0.5),
     reason: String(parsed.reason || (paid ? "Comprovante validado." : "Comprovante nao validado.")),
+    userMessage: String(parsed.user_message || parsed.userMessage || "").trim() || undefined,
     transcript: text
   };
 }

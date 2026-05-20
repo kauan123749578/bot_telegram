@@ -94,7 +94,7 @@ const botFormFieldsSchema = z.object({
   prompt: z.string().min(1),
   pixKey: z.string().default(""),
   pixRecipientName: z.string().optional(),
-  messageDelayMs: z.coerce.number().default(2500),
+  messageDelayMs: z.coerce.number().min(1500).default(3500),
   active: z.enum(["true", "false"]).default("true"),
   paymentMethod: z.enum(["pix", "laranjinha"]).default("pix"),
   laranjinhaApiKey: z.string().optional(),

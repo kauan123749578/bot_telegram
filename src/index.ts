@@ -1,4 +1,3 @@
-import path from "node:path";
 import formbody from "@fastify/formbody";
 import multipart from "@fastify/multipart";
 import Fastify from "fastify";
@@ -8,7 +7,6 @@ import { Telegraf } from "telegraf";
 import {
   ensureDataFile,
   loadBots,
-  uploadsDir,
   type BotConfig
 } from "./bots.js";
 import { env } from "./config.js";
@@ -16,21 +14,30 @@ import { initDatabase, useDatabase } from "./db/index.js";
 import { logMessage, logReceipt, logSale, upsertLead } from "./db/events.js";
 import { decryptSecret } from "./lib/crypto.js";
 import { createLaranjinhaCharge } from "./lib/laranjinha.js";
-import { humanPause } from "./lib/humanize.js";
+import { randomPreviewIntro } from "./lib/humanize.js";
+import { formatReceiptOutcome, randomReceiptAck } from "./lib/receipt-messages.js";
 import {
   validateReceiptFromImage,
   validateReceiptFromText,
   type ReceiptVerdict
 } from "./lib/receipt-validator.js";
 import { getOpenAI, getOpenAIModel } from "./lib/settings.js";
+import {
+  humanReadingPause,
+  humanSendMediaList,
+  humanSendText,
+  humanSendTexts
+} from "./lib/telegram-send.js";
 import { registerPanelRoutes } from "./panel/routes.js";
 
 const BOT_LAUNCH_TIMEOUT_MS = 20_000;
+const PREVIEW_COOLDOWN_MS = 90_000;
 
 type RuntimeBot = {
   config: BotConfig;
   bot: Telegraf;
   historyByChat: Map<number, OpenAI.Chat.Completions.ChatCompletionMessageParam[]>;
+  previewSentAt: Map<number, number>;
 };
 
 const runningBots = new Map<string, RuntimeBot>();
@@ -42,36 +49,6 @@ function receiptContext(config: BotConfig) {
     expectedAmountCents: config.productPriceCents,
     userId: config.userId
   };
-}
-
-async function humanReply(
-  ctx: { chat: { id: number }; reply: (msg: string) => Promise<unknown>; telegram: Telegraf["telegram"] },
-  config: BotConfig,
-  message: string
-) {
-  await ctx.telegram.sendChatAction(ctx.chat.id, "typing");
-  await humanPause(config.messageDelayMs);
-  return ctx.reply(message);
-}
-
-function isUploadedMedia(value: string) {
-  return value.startsWith("/uploads/");
-}
-
-function uploadPathFromUrl(value: string) {
-  return path.join(uploadsDir, path.basename(value));
-}
-
-function isImageUrl(url: string) {
-  return /\.(jpg|jpeg|png|webp)(\?.*)?$/i.test(url);
-}
-
-function isVideoUrl(url: string) {
-  return /\.(mp4|mov|webm)(\?.*)?$/i.test(url);
-}
-
-function isAudioUrl(url: string) {
-  return /\.(mp3|ogg|wav|m4a)(\?.*)?$/i.test(url);
 }
 
 function isPdfFile(fileName = "", mimeType = "") {
@@ -90,18 +67,10 @@ async function downloadBuffer(url: string) {
   return Buffer.from(await response.arrayBuffer());
 }
 
-async function sendMediaList(bot: Telegraf, chatId: number, urls: string[]) {
-  for (const url of urls) {
-    const media = isUploadedMedia(url) ? { source: uploadPathFromUrl(url) } : url;
-    if (isImageUrl(url)) await bot.telegram.sendPhoto(chatId, media);
-    else if (isVideoUrl(url)) await bot.telegram.sendVideo(chatId, media);
-    else if (isAudioUrl(url)) await bot.telegram.sendAudio(chatId, media);
-    else await bot.telegram.sendDocument(chatId, media);
-  }
-}
-
 function wantsPreview(text: string) {
-  return /previa|prévia|foto|video|vídeo|audio|áudio|amostra|ver antes/i.test(text);
+  return /previa|prévia|foto|video|vídeo|audio|áudio|amostra|ver antes|manda foto|mandar foto/i.test(
+    text
+  );
 }
 
 function wantsPix(text: string) {
@@ -115,7 +84,7 @@ async function analyzeReceiptPdf(input: { pdfUrl: string; config: BotConfig }): 
   await parser.destroy();
   const text = parsed.text.trim();
   if (!text) {
-    return { paid: false, confidence: 0, reason: "Nao consegui extrair texto do PDF." };
+    return { paid: false, confidence: 0, reason: "Nao foi possivel extrair texto do PDF." };
   }
   return validateReceiptFromText({ text, ...receiptContext(input.config) });
 }
@@ -124,48 +93,55 @@ async function deliverProduct(input: {
   bot: Telegraf;
   config: BotConfig;
   chatId: number;
-  reply: (message: string) => Promise<unknown>;
-  paymentMethod: string;
 }) {
+  const { bot, config, chatId } = input;
+  const telegram = bot.telegram;
+
   await logSale({
-    botId: input.config.id,
-    chatId: input.chatId,
-    productName: input.config.productName,
-    amountCents: input.config.productPriceCents,
-    paymentMethod: input.paymentMethod
+    botId: config.id,
+    chatId,
+    productName: config.productName,
+    amountCents: config.productPriceCents,
+    paymentMethod: config.paymentMethod
   });
 
-  await input.reply(`Pagamento aprovado! Liberando seu acesso...`);
-  await humanPause(input.config.messageDelayMs);
-
-  if (input.config.telegramGroupLink) {
-    await input.reply(
-      `Seu grupo VIP:\n${input.config.telegramGroupLink}\n\nEntre pelo link acima. Qualquer duvida, me chama aqui.`
+  if (config.telegramGroupLink) {
+    await humanSendText(
+      telegram,
+      chatId,
+      config,
+      `Seu grupo VIP:\n${config.telegramGroupLink}\n\nEntre pelo link acima. Qualquer duvida, me chama aqui.`
     );
     await logMessage({
-      botId: input.config.id,
-      chatId: input.chatId,
+      botId: config.id,
+      chatId,
       role: "system",
-      content: `Entrega grupo: ${input.config.telegramGroupLink}`
+      content: `Entrega grupo: ${config.telegramGroupLink}`
     });
   }
 
-  if (input.config.deliveryMediaUrls.length > 0) {
-    await sendMediaList(input.bot, input.chatId, input.config.deliveryMediaUrls);
-  } else if (!input.config.telegramGroupLink) {
-    await input.reply("Produto liberado, mas configure entrega (grupo ou midia) no painel.");
+  if (config.deliveryMediaUrls.length > 0) {
+    await humanSendMediaList(telegram, chatId, config, config.deliveryMediaUrls);
+  } else if (!config.telegramGroupLink) {
+    await humanSendText(
+      telegram,
+      chatId,
+      config,
+      "Produto liberado, mas configure entrega (grupo ou midia) no painel."
+    );
   }
 }
 
 async function handleReceiptResult(input: {
   result: ReceiptVerdict;
   chatId: number;
-  reply: (message: string) => Promise<unknown>;
   bot: Telegraf;
   config: BotConfig;
   fileUrl?: string;
   fileType?: string;
 }) {
+  const telegram = input.bot.telegram;
+
   await logReceipt({
     botId: input.config.id,
     chatId: input.chatId,
@@ -177,25 +153,31 @@ async function handleReceiptResult(input: {
   });
 
   if (input.result.paid) {
+    await humanSendText(
+      telegram,
+      input.chatId,
+      input.config,
+      formatReceiptOutcome(input.result, input.result.userMessage)
+    );
     await deliverProduct({
       bot: input.bot,
       config: input.config,
-      chatId: input.chatId,
-      reply: input.reply,
-      paymentMethod: input.config.paymentMethod
+      chatId: input.chatId
     });
     return;
   }
-  await input.reply(
-    `Nao consegui aprovar automaticamente.\nMotivo: ${input.result.reason}\n\nRevisao manual necessaria.`
+
+  await humanSendText(
+    telegram,
+    input.chatId,
+    input.config,
+    formatReceiptOutcome(input.result, input.result.userMessage)
   );
 }
 
-async function sendPaymentInstructions(
-  ctx: { reply: (msg: string) => Promise<unknown>; chat: { id: number } },
-  config: BotConfig
-) {
-  await humanPause(config.messageDelayMs);
+async function sendPaymentInstructions(bot: Telegraf, chatId: number, config: BotConfig) {
+  const telegram = bot.telegram;
+  const price = (config.productPriceCents / 100).toFixed(2).replace(".", ",");
 
   if (config.paymentMethod === "laranjinha" && config.laranjinhaApiKeyEncrypted) {
     try {
@@ -205,26 +187,77 @@ async function sendPaymentInstructions(
         amountCents: config.productPriceCents,
         description: config.productName
       });
-      await ctx.reply(
-        `Pagamento via Laranjinha — ${config.productName}\nValor: R$ ${(config.productPriceCents / 100).toFixed(2).replace(".", ",")}\n\nCopie o Pix:\n${charge.brCode}\n\nDepois envie o comprovante aqui.`
-      );
+      await humanSendTexts(telegram, chatId, config, [
+        `Ótima escolha! ${config.productName} — R$ ${price}`,
+        `Copia o Pix aqui:\n${charge.brCode}`,
+        "Depois me manda o comprovante por aqui mesmo, tá?"
+      ]);
       return;
     } catch (error) {
       console.error("Laranjinha:", error);
-      await ctx.reply("Gateway indisponivel. Use a chave Pix abaixo.");
+      await humanSendText(telegram, chatId, config, "Gateway indisponivel no momento. Segue a chave Pix:");
     }
   }
 
-  await ctx.reply(
-    `Chave Pix:\n${config.pixKey}\n\nProduto: ${config.productName} — R$ ${(config.productPriceCents / 100).toFixed(2).replace(".", ",")}\n\nEnvie o comprovante como imagem ou PDF.`
-  );
+  await humanSendTexts(telegram, chatId, config, [
+    `Chave Pix: ${config.pixKey}`,
+    `Produto: ${config.productName} — R$ ${price}`,
+    "Quando pagar, manda o comprovante em imagem ou PDF."
+  ]);
+}
+
+async function sendPreview(runtime: RuntimeBot, chatId: number, opts?: { skipIntro?: boolean }) {
+  const { bot, config, previewSentAt } = runtime;
+  const now = Date.now();
+  const last = previewSentAt.get(chatId) ?? 0;
+
+  if (now - last < PREVIEW_COOLDOWN_MS) {
+    return false;
+  }
+
+  previewSentAt.set(chatId, now);
+  if (!opts?.skipIntro) {
+    await humanSendText(bot.telegram, chatId, config, randomPreviewIntro());
+  }
+  await humanSendMediaList(bot.telegram, chatId, config, config.previewMediaUrls);
+  return true;
+}
+
+async function processReceiptFile(input: {
+  ctx: { chat: { id: number }; telegram: Telegraf["telegram"] };
+  bot: Telegraf;
+  config: BotConfig;
+  fileUrl: string;
+  fileType: string;
+  validate: () => Promise<ReceiptVerdict>;
+}) {
+  const chatId = input.ctx.chat.id;
+  const telegram = input.ctx.telegram;
+
+  await humanSendText(telegram, chatId, input.config, randomReceiptAck());
+  await humanReadingPause(input.config);
+
+  const result = await input.validate();
+  await handleReceiptResult({
+    result,
+    chatId,
+    bot: input.bot,
+    config: input.config,
+    fileUrl: input.fileUrl,
+    fileType: input.fileType
+  });
 }
 
 async function startBot(config: BotConfig) {
   if (!config.active || !config.token) return;
 
   const bot = new Telegraf(config.token);
-  const runtime: RuntimeBot = { config, bot, historyByChat: new Map() };
+  const runtime: RuntimeBot = {
+    config,
+    bot,
+    historyByChat: new Map(),
+    previewSentAt: new Map()
+  };
 
   bot.start(async (ctx) => {
     const from = ctx.from;
@@ -236,26 +269,29 @@ async function startBot(config: BotConfig) {
     });
   });
 
-  bot.command("pix", async (ctx) => sendPaymentInstructions(ctx, config));
+  bot.command("pix", async (ctx) => sendPaymentInstructions(bot, ctx.chat.id, config));
 
   bot.on("photo", async (ctx) => {
     try {
       const photos = ctx.message.photo;
       const fileUrl = await ctx.telegram.getFileLink(photos[photos.length - 1].file_id);
-      await humanReply(ctx, config, "Recebi seu comprovante. Vou conferir agora.");
-      const result = await validateReceiptFromImage({ imageUrl: fileUrl.href, ...receiptContext(config) });
-      await handleReceiptResult({
-        result,
-        chatId: ctx.chat.id,
-        reply: ctx.reply.bind(ctx),
+      await processReceiptFile({
+        ctx,
         bot,
         config,
         fileUrl: fileUrl.href,
-        fileType: "image"
+        fileType: "image",
+        validate: () =>
+          validateReceiptFromImage({ imageUrl: fileUrl.href, ...receiptContext(config) })
       });
     } catch (error) {
       console.error(error);
-      await ctx.reply("Erro ao analisar comprovante. Verifique a API Key no painel.");
+      await humanSendText(
+        ctx.telegram,
+        ctx.chat.id,
+        config,
+        "Deu um probleminha ao conferir. Tenta mandar de novo ou fala comigo."
+      );
     }
   });
 
@@ -267,27 +303,34 @@ async function startBot(config: BotConfig) {
       const fileUrl = await ctx.telegram.getFileLink(document.file_id);
 
       if (!isPdfFile(fileName, mimeType) && !isImageFile(fileName, mimeType)) {
-        await ctx.reply("Para comprovante, envie imagem ou PDF.");
+        await humanSendText(
+          ctx.telegram,
+          ctx.chat.id,
+          config,
+          "Para comprovante, manda imagem ou PDF, tá?"
+        );
         return;
       }
 
-      await humanReply(ctx, config, "Recebi seu comprovante. Vou conferir agora.");
-      const result = isPdfFile(fileName, mimeType)
-        ? await analyzeReceiptPdf({ pdfUrl: fileUrl.href, config })
-        : await validateReceiptFromImage({ imageUrl: fileUrl.href, ...receiptContext(config) });
-
-      await handleReceiptResult({
-        result,
-        chatId: ctx.chat.id,
-        reply: ctx.reply.bind(ctx),
+      await processReceiptFile({
+        ctx,
         bot,
         config,
         fileUrl: fileUrl.href,
-        fileType: isPdfFile(fileName, mimeType) ? "pdf" : "image"
+        fileType: isPdfFile(fileName, mimeType) ? "pdf" : "image",
+        validate: () =>
+          isPdfFile(fileName, mimeType)
+            ? analyzeReceiptPdf({ pdfUrl: fileUrl.href, config })
+            : validateReceiptFromImage({ imageUrl: fileUrl.href, ...receiptContext(config) })
       });
     } catch (error) {
       console.error(error);
-      await ctx.reply("Erro ao analisar comprovante. Verifique a API Key no painel.");
+      await humanSendText(
+        ctx.telegram,
+        ctx.chat.id,
+        config,
+        "Deu um probleminha ao conferir. Tenta mandar de novo ou fala comigo."
+      );
     }
   });
 
@@ -307,13 +350,13 @@ async function startBot(config: BotConfig) {
     runtime.historyByChat.set(chatId, history);
 
     if (wantsPreview(text) && config.previewMediaUrls.length > 0) {
-      await humanReply(ctx, config, "Vou te mandar uma previa.");
-      await sendMediaList(bot, chatId, config.previewMediaUrls);
+      await sendPreview(runtime, chatId);
       return;
     }
 
     if (wantsPix(text)) {
-      await sendPaymentInstructions(ctx, config);
+      await sendPaymentInstructions(bot, chatId, config);
+      return;
     }
 
     try {
@@ -325,7 +368,10 @@ async function startBot(config: BotConfig) {
         messages: [
           {
             role: "system",
-            content: `${config.prompt}\n\nPix: ${config.pixKey}. Responda curto e natural.`
+            content: `${config.prompt}
+
+Pix: ${config.pixKey}. Produto: ${config.productName}.
+Regras: respostas curtas e naturais; uma ideia por vez; nao repita frases; se pedirem previa/foto, diga que vai mandar sem enviar links; nao invente que ja enviou midia.`
           },
           ...history.slice(-10),
           { role: "user", content: text }
@@ -334,10 +380,25 @@ async function startBot(config: BotConfig) {
       const reply = completion.choices[0]?.message.content?.trim() || "Me chama de novo.";
       history.push({ role: "user", content: text }, { role: "assistant", content: reply });
       await logMessage({ botId: config.id, chatId, role: "assistant", content: reply });
-      await humanReply(ctx, config, reply);
+
+      const lower = reply.toLowerCase();
+      const aiOffersPreview =
+        /previa|prévia|vou te mandar|segue a foto|mando agora|olha s[oó]/i.test(lower) &&
+        config.previewMediaUrls.length > 0;
+
+      await humanSendText(ctx.telegram, chatId, config, reply);
+
+      if (aiOffersPreview) {
+        await sendPreview(runtime, chatId, { skipIntro: true });
+      }
     } catch (error) {
       console.error(error);
-      await ctx.reply("IA indisponivel. Configure a OpenAI API Key em Configuracoes no painel.");
+      await humanSendText(
+        ctx.telegram,
+        chatId,
+        config,
+        "IA indisponivel. Configure a OpenAI API Key em Configuracoes no painel."
+      );
     }
   });
 

@@ -59,8 +59,9 @@ export function botInstanceForm(mode: "new" | "edit", bot?: BotConfig) {
         <label class="field">Nome do recebedor Pix
           <input name="pixRecipientName" value="${isEdit ? escapeHtml(bot.pixRecipientName) : ""}" placeholder="Nome no comprovante" />
         </label>
-        <label class="field">Delay resposta (ms)
-          <input name="messageDelayMs" type="number" value="${isEdit ? bot.messageDelayMs : 2500}" min="800" />
+        <label class="field">Delay entre mensagens (ms)
+          <input name="messageDelayMs" type="number" value="${isEdit ? bot.messageDelayMs : 3500}" min="1500" step="500" />
+          <small style="color:var(--muted);font-weight:400">Ex: 3500 = ~3s · 15000 = ~15s entre cada mensagem</small>
         </label>
         <label class="field span-2" id="prompt">Prompt / persona da IA
           <textarea name="prompt" required>${isEdit ? escapeHtml(bot.prompt) : "Voce atende leads no Telegram de forma simpatica, curta e persuasiva. Quando pedirem previa, ofereca. Quando pedirem Pix, informe a chave."}</textarea>
@@ -69,8 +70,8 @@ export function botInstanceForm(mode: "new" | "edit", bot?: BotConfig) {
           <span>Prévias (upload)</span>
           ${isEdit ? mediaChips(bot.previewMediaUrls, "Prévias atuais") : ""}
           <div class="dropzone">
-            <p style="color:var(--muted);margin-bottom:8px">${icons.upload} ${isEdit ? "Adicionar mais prévias" : "Imagens, vídeos ou áudios"}</p>
-            <input name="previewFiles" type="file" accept="image/*,video/*,audio/*" multiple />
+            <p style="color:var(--muted);margin-bottom:8px">${icons.upload} ${isEdit ? "Adicionar mais prévias" : "Imagens, vídeos, áudios ou notas de voz (.ogg)"}</p>
+            <input name="previewFiles" type="file" accept="image/*,video/*,audio/*,.ogg,.opus" multiple />
           </div>
         </label>
         <label class="field span-2">
@@ -78,7 +79,7 @@ export function botInstanceForm(mode: "new" | "edit", bot?: BotConfig) {
           ${isEdit ? mediaChips(bot.deliveryMediaUrls, "Entregas atuais") : ""}
           <div class="dropzone">
             <p style="color:var(--muted);margin-bottom:8px">${icons.upload} ${isEdit ? "Adicionar mais entregas" : "Arquivos após Pix aprovado"}</p>
-            <input name="deliveryFiles" type="file" accept="image/*,video/*,audio/*,application/pdf" multiple />
+            <input name="deliveryFiles" type="file" accept="image/*,video/*,audio/*,.ogg,.opus,application/pdf" multiple />
           </div>
         </label>
         <label class="field">Forma de pagamento
