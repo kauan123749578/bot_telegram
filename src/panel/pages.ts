@@ -91,6 +91,13 @@ export function productsPage(
 ) {
   const body = `
     ${message ? alertHtml(message) : ""}
+    <div class="card card-accent-gold" style="margin-bottom:16px">
+      <div class="card-body" style="font-size:0.88rem;color:var(--text-2);line-height:1.6">
+        <strong>O que é Produtos?</strong> Catálogo extra por instância (nome + preço) para você organizar planos no painel.
+        O preço que o bot cobra no Pix hoje vem da instância em <em>Editar instância → Produto / plano</em>.
+        Use esta tela quando tiver vários produtos no mesmo bot.
+      </div>
+    </div>
     <div class="grid-2">
       <div class="card">
         <div class="card-head"><h3>Novo produto</h3></div>
@@ -127,7 +134,50 @@ export function productsPage(
       </div>
     </div>`;
 
-  return wrap("Produtos", "products", body.replaceAll("<div", "<div").replaceAll("</div>", "</div>").replaceAll("<div", "<div").replaceAll("</div>", "</div>"), partial);
+  return wrap("Produtos", "products", body, partial);
+}
+
+export function remarketingPage(
+  bots: BotConfig[],
+  message = "",
+  isError = false,
+  partial?: boolean
+) {
+  const body = `
+    ${message ? alertHtml(message, isError ? "error" : "success") : ""}
+    <div class="card card-accent-rose">
+      <div class="card-head"><h3>${icons.megaphone} Remarketing</h3></div>
+      <div class="card-body">
+        <p style="color:var(--text-2);line-height:1.55;margin-bottom:16px">
+          Envia a <strong>mesma mensagem</strong> para todos os leads que já falaram com a instância escolhida.
+          Cada envio respeita o delay humano configurado na instância.
+        </p>
+        <form method="post" action="/remarketing">
+          <label class="field">Instância
+            <select name="botId" required>
+              ${bots.length === 0 ? `<option value="">Cadastre uma instância primeiro</option>` : ""}
+              ${bots.map((b) => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="field">Mensagem para os leads
+            <textarea name="message" required placeholder="Oi! Ainda tem interesse no VIP? Hoje liberamos condição especial..." style="min-height:120px"></textarea>
+          </label>
+          <button type="submit" class="btn btn-primary btn-block" ${bots.length === 0 ? "disabled" : ""}>
+            Enviar remarketing
+          </button>
+        </form>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <div class="card-head"><h3>Como funciona</h3></div>
+      <div class="card-body" style="font-size:0.88rem;color:var(--text-2);line-height:1.6">
+        <p><strong>1.</strong> Lead conversa com o bot → fica salvo em Leads.</p>
+        <p><strong>2.</strong> Você escreve a campanha aqui e escolhe a instância.</p>
+        <p><strong>3.</strong> O bot manda sua mensagem para cada chat, com pausa entre envios (parece humano).</p>
+      </div>
+    </div>`;
+
+  return wrap("Remarketing", "remarketing", body, partial);
 }
 
 export function mediaPage(bots: BotConfig[], partial?: boolean) {
@@ -138,6 +188,9 @@ export function mediaPage(bots: BotConfig[], partial?: boolean) {
     }
     for (const url of bot.deliveryMediaUrls) {
       items.push({ bot: bot.name, type: "Entrega", url });
+    }
+    for (const audio of bot.audioLibrary ?? []) {
+      items.push({ bot: bot.name, type: `Áudio: ${audio.label}`, url: audio.url });
     }
   }
 

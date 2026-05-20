@@ -12,7 +12,8 @@ export type NavId =
   | "conversations"
   | "payments"
   | "products"
-  | "media";
+  | "media"
+  | "remarketing";
 
 export function escapeHtml(value: string) {
   return value
@@ -59,6 +60,7 @@ export function appLayout(
           ${navItem("/", "Dashboard", icons.dashboard, is("dashboard"))}
           ${navItem("/instances", "Instâncias", icons.layers, is("instances"))}
           ${navItem("/leads", "Leads", icons.users, is("leads"))}
+          ${navItem("/remarketing", "Remarketing", icons.megaphone, is("remarketing"))}
           ${navItem("/conversations", "Conversas", icons.chat, is("conversations"))}
           ${navItem("/payments", "Pagamentos", icons.card, is("payments"))}
           ${navItem("/products", "Produtos", icons.box, is("products"))}

@@ -69,6 +69,7 @@ export async function initUsersSchema() {
       ALTER TABLE bots ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES panel_users(id) ON DELETE CASCADE;
       ALTER TABLE bots ADD COLUMN IF NOT EXISTS avatar_url TEXT NOT NULL DEFAULT '';
       ALTER TABLE bots ADD COLUMN IF NOT EXISTS pix_recipient_name TEXT NOT NULL DEFAULT '';
+      ALTER TABLE bots ADD COLUMN IF NOT EXISTS audio_library JSONB NOT NULL DEFAULT '[]';
     `);
 
     const { rows } = await db.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM panel_users");

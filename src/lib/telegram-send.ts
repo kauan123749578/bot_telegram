@@ -64,6 +64,19 @@ export async function humanReadingPause(config: BotConfig) {
   await humanPause(readingMs);
 }
 
+export async function humanSendNamedAudio(
+  telegram: TelegramApi,
+  chatId: number,
+  config: BotConfig,
+  url: string
+) {
+  await typingAndPause(telegram, chatId, config.messageDelayMs, true);
+  const media = mediaSource(url);
+  if (isVoiceUrl(url)) await telegram.sendVoice(chatId, media);
+  else if (isAudioUrl(url)) await telegram.sendAudio(chatId, media);
+  else await telegram.sendDocument(chatId, media);
+}
+
 export async function humanSendMediaList(
   telegram: TelegramApi,
   chatId: number,

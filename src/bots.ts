@@ -8,6 +8,12 @@ const dataDir = env.DATA_DIR;
 const uploadsDir = path.join(dataDir, "uploads");
 export const botsFile = path.join(dataDir, "bots.json");
 
+export type NamedAudio = {
+  label: string;
+  url: string;
+  keywords?: string;
+};
+
 export type BotConfig = {
   id: string;
   userId: string;
@@ -19,6 +25,7 @@ export type BotConfig = {
   messageDelayMs: number;
   previewMediaUrls: string[];
   deliveryMediaUrls: string[];
+  audioLibrary: NamedAudio[];
   avatarUrl: string;
   active: boolean;
   paymentMethod: "pix" | "laranjinha";
@@ -27,6 +34,19 @@ export type BotConfig = {
   productPriceCents: number;
   telegramGroupLink: string;
 };
+
+function parseAudioLibrary(value: unknown): NamedAudio[] {
+  if (!value) return [];
+  const raw = typeof value === "string" ? JSON.parse(value) : value;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => ({
+      label: String(item?.label ?? "").trim(),
+      url: String(item?.url ?? "").trim(),
+      keywords: item?.keywords ? String(item.keywords).trim() : undefined
+    }))
+    .filter((item) => item.label && item.url);
+}
 
 export function parseUrls(value: string) {
   return value
@@ -64,6 +84,7 @@ function rowToBot(row: {
   product_name?: string;
   product_price_cents?: number;
   telegram_group_link?: string;
+  audio_library?: string[] | string | NamedAudio[];
 }): BotConfig {
   return {
     id: row.id,
@@ -82,6 +103,7 @@ function rowToBot(row: {
       typeof row.delivery_media_urls === "string"
         ? JSON.parse(row.delivery_media_urls)
         : row.delivery_media_urls,
+    audioLibrary: parseAudioLibrary(row.audio_library),
     avatarUrl: row.avatar_url ?? "",
     active: row.active,
     paymentMethod: row.payment_method === "laranjinha" ? "laranjinha" : "pix",
@@ -93,7 +115,7 @@ function rowToBot(row: {
 }
 
 const BOT_SELECT = `SELECT id, user_id, name, token, prompt, pix_key, pix_recipient_name, message_delay_ms,
-  preview_media_urls, delivery_media_urls, avatar_url, active,
+  preview_media_urls, delivery_media_urls, audio_library, avatar_url, active,
   payment_method, laranjinha_api_key_encrypted, product_name, product_price_cents, telegram_group_link
   FROM bots`;
 
@@ -117,7 +139,8 @@ export async function loadBots(userId?: string) {
     productName: b.productName ?? "VIP",
     productPriceCents: b.productPriceCents ?? 4990,
     telegramGroupLink: b.telegramGroupLink ?? "",
-    paymentMethod: b.paymentMethod === "laranjinha" ? "laranjinha" : "pix"
+    paymentMethod: b.paymentMethod === "laranjinha" ? "laranjinha" : "pix",
+    audioLibrary: parseAudioLibrary(b.audioLibrary)
   })) as BotConfig[];
 
   return userId ? normalized.filter((b) => b.userId === userId) : normalized;
@@ -132,9 +155,9 @@ export async function upsertBot(bot: BotConfig) {
   if (useDatabase()) {
     await getPool().query(
       `INSERT INTO bots (id, user_id, name, token, prompt, pix_key, pix_recipient_name, message_delay_ms,
-        preview_media_urls, delivery_media_urls, avatar_url, active,
+        preview_media_urls, delivery_media_urls, audio_library, avatar_url, active,
         payment_method, laranjinha_api_key_encrypted, product_name, product_price_cents, telegram_group_link)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16,$17)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16,$17,$18)
        ON CONFLICT (id) DO UPDATE SET
          user_id = EXCLUDED.user_id,
          name = EXCLUDED.name,
@@ -145,6 +168,7 @@ export async function upsertBot(bot: BotConfig) {
          message_delay_ms = EXCLUDED.message_delay_ms,
          preview_media_urls = EXCLUDED.preview_media_urls,
          delivery_media_urls = EXCLUDED.delivery_media_urls,
+         audio_library = EXCLUDED.audio_library,
          avatar_url = EXCLUDED.avatar_url,
          active = EXCLUDED.active,
          payment_method = EXCLUDED.payment_method,
@@ -163,6 +187,7 @@ export async function upsertBot(bot: BotConfig) {
         bot.messageDelayMs,
         JSON.stringify(bot.previewMediaUrls),
         JSON.stringify(bot.deliveryMediaUrls),
+        JSON.stringify(bot.audioLibrary ?? []),
         bot.avatarUrl,
         bot.active,
         bot.paymentMethod,

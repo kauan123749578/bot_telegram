@@ -20,7 +20,8 @@ import {
   salesRankingByBot,
   saveProduct
 } from "../db/events.js";
-import { deleteBot, getBotById, loadBots, upsertBot, uploadsDir } from "../bots.js";
+import { deleteBot, getBotById, loadBots, upsertBot, uploadsDir, type NamedAudio } from "../bots.js";
+import { sendRemarketing } from "../lib/remarketing.js";
 import { authenticateUser, createUser } from "../db/users.js";
 import { encryptSecret } from "../lib/crypto.js";
 import {
@@ -36,6 +37,7 @@ import {
   mediaPage,
   paymentsPage,
   productsPage,
+  remarketingPage,
   salesChartSvgFromData
 } from "./pages.js";
 import {
@@ -72,6 +74,7 @@ async function parseBotMultipart(request: FastifyRequest) {
   const previewUploads: string[] = [];
   const deliveryUploads: string[] = [];
   let avatarUrl = "";
+  let newNamedAudioUrl = "";
 
   for await (const part of request.parts()) {
     if (part.type === "file") {
@@ -89,13 +92,47 @@ async function parseBotMultipart(request: FastifyRequest) {
       ) {
         deliveryUploads.push(url);
       }
+      if (part.fieldname === "newAudioFile") newNamedAudioUrl = url;
       if (part.fieldname === "avatarFile") avatarUrl = url;
       continue;
     }
-    fields[part.fieldname] = String(part.value || "");
+    const key = part.fieldname;
+    if (key === "removeAudioIndexes") {
+      const prev = fields[key] ? `${fields[key]},` : "";
+      fields[key] = `${prev}${String(part.value || "")}`;
+    } else {
+      fields[key] = String(part.value || "");
+    }
   }
 
-  return { fields, previewUploads, deliveryUploads, avatarUrl };
+  return { fields, previewUploads, deliveryUploads, avatarUrl, newNamedAudioUrl };
+}
+
+function mergeAudioLibrary(
+  existing: NamedAudio[],
+  fields: Record<string, string>,
+  newUrl: string
+): NamedAudio[] {
+  let library = [...existing];
+  const removeRaw = fields.removeAudioIndexes || "";
+  const removeSet = new Set(
+    removeRaw
+      .split(",")
+      .map((v) => Number(v.trim()))
+      .filter((n) => Number.isFinite(n))
+  );
+  library = library.filter((_, index) => !removeSet.has(index));
+
+  const label = fields.newAudioLabel?.trim();
+  if (label && newUrl) {
+    library.push({
+      label,
+      url: newUrl,
+      keywords: fields.newAudioKeywords?.trim() || undefined
+    });
+  }
+
+  return library;
 }
 
 const botFormFieldsSchema = z.object({
@@ -284,6 +321,49 @@ export async function registerPanelRoutes(
     return reply.type("text/html").send(html);
   });
 
+  app.get("/remarketing", async (request, reply) => {
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
+    const html = remarketingPage(
+      await loadBots(user.id),
+      query.msg,
+      query.t === "err",
+      isPartial(request)
+    );
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/remarketing", async (request, reply) => {
+    const user = requireUser(request, reply);
+    if (!user) return;
+    try {
+      const body = z
+        .object({
+          botId: z.string().min(1),
+          message: z.string().min(1).max(4000)
+        })
+        .parse(request.body ?? {});
+
+      const bot = await getBotById(body.botId, user.id);
+      if (!bot) return reply.redirect(flashRedirect("/remarketing", "Instância não encontrada.", "err"));
+      if (!bot.active) {
+        return reply.redirect(flashRedirect("/remarketing", "Ative a instância antes de enviar.", "err"));
+      }
+
+      const result = await sendRemarketing({ config: bot, message: body.message.trim() });
+      return reply.redirect(
+        flashRedirect(
+          "/remarketing",
+          `Remarketing: ${result.sent} enviada(s), ${result.failed} falha(s), de ${result.total} lead(s).`
+        )
+      );
+    } catch (error) {
+      request.log.error(error);
+      return reply.redirect(flashRedirect("/remarketing", `Erro: ${errorMessage(error)}`, "err"));
+    }
+  });
+
   app.get("/conversations", async (request, reply) => {
     const user = requireUser(request, reply);
     if (!user) return;
@@ -383,7 +463,8 @@ export async function registerPanelRoutes(
       const existing = await getBotById(params.id, user.id);
       if (!existing) return reply.redirect(flashRedirect("/instances", "Instância não encontrada.", "err"));
 
-      const { fields, previewUploads, deliveryUploads, avatarUrl } = await parseBotMultipart(request);
+      const { fields, previewUploads, deliveryUploads, avatarUrl, newNamedAudioUrl } =
+        await parseBotMultipart(request);
       const body = botFormFieldsSchema.parse(fields);
       const token = body.token?.trim();
       if (token && token.length < 20) {
@@ -401,6 +482,7 @@ export async function registerPanelRoutes(
         messageDelayMs: messageDelayMsFromForm(body),
         previewMediaUrls: [...existing.previewMediaUrls, ...previewUploads],
         deliveryMediaUrls: [...existing.deliveryMediaUrls, ...deliveryUploads],
+        audioLibrary: mergeAudioLibrary(existing.audioLibrary ?? [], fields, newNamedAudioUrl),
         avatarUrl: avatarUrl || existing.avatarUrl,
         active: body.active === "true",
         paymentMethod: body.paymentMethod,
@@ -472,7 +554,8 @@ export async function registerPanelRoutes(
     const user = requireUser(request, reply);
     if (!user) return;
     try {
-      const { fields, previewUploads, deliveryUploads, avatarUrl } = await parseBotMultipart(request);
+      const { fields, previewUploads, deliveryUploads, avatarUrl, newNamedAudioUrl } =
+        await parseBotMultipart(request);
       const body = botFormFieldsSchema
         .extend({ token: z.string().min(20) })
         .parse(fields);
@@ -488,6 +571,7 @@ export async function registerPanelRoutes(
         messageDelayMs: messageDelayMsFromForm(body),
         previewMediaUrls: previewUploads,
         deliveryMediaUrls: deliveryUploads,
+        audioLibrary: mergeAudioLibrary([], fields, newNamedAudioUrl),
         avatarUrl,
         active: body.active === "true",
         paymentMethod: body.paymentMethod,

@@ -15,10 +15,34 @@ function countAudioUrls(urls: string[]) {
 }
 
 export function botAvatarHtml(bot: BotConfig) {
+  const initials = botInitials(bot.name);
   if (bot.avatarUrl) {
-    return `<div class="bot-av has-photo" style="background-image:url('${escapeHtml(bot.avatarUrl)}')"></div>`;
+    const url = escapeHtml(bot.avatarUrl);
+    return `<div class="bot-av-wrap">
+      <img class="bot-av-img" src="${url}" alt="" loading="lazy"
+        onerror="this.remove();this.parentElement.querySelector('.bot-av-fallback')?.classList.add('show')" />
+      <div class="bot-av bot-av-fallback">${initials}</div>
+    </div>`;
   }
-  return `<div class="bot-av">${botInitials(bot.name)}</div>`;
+  return `<div class="bot-av-wrap"><div class="bot-av bot-av-fallback show">${initials}</div></div>`;
+}
+
+function audioLibraryHtml(library: BotConfig["audioLibrary"]) {
+  if (!library?.length) {
+    return `<p class="form-hint">Nenhum áudio nomeado ainda. Ex: nome <strong>oi, tudo bem?</strong> → arquivo com essa fala.</p>`;
+  }
+  return `<ul class="audio-library-list">
+    ${library
+      .map(
+        (item, i) => `
+      <li>
+        <span class="audio-library-label">${escapeHtml(item.label)}</span>
+        <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="card-link">ouvir</a>
+        <label class="audio-remove"><input type="checkbox" name="removeAudioIndexes" value="${i}" /> remover</label>
+      </li>`
+      )
+      .join("")}
+  </ul>`;
 }
 
 function mediaChips(urls: string[], label: string) {
@@ -95,29 +119,33 @@ export function botInstanceForm(mode: "new" | "edit", bot?: BotConfig) {
           <p class="form-hint">Ex: 1 min + 30 seg = ~90s entre cada bolha. Comprovante usa pausa extra automática.</p>
         </div>
 
-        <div class="form-section span-2">
+        <div class="form-section span-2 form-section-audio">
           <div class="form-section-head">
-            <span class="form-section-icon">${icons.audio}</span>
+            <span class="form-section-icon form-section-icon-violet">${icons.audio}</span>
             <div>
-              <h4>Áudios e notas de voz</h4>
-              <p>MP3/M4A = áudio · OGG/OPUS = nota de voz no Telegram.</p>
+              <h4>Biblioteca de áudios nomeados</h4>
+              <p>O bot envia o arquivo quando o lead ou a IA usar as <strong>mesmas palavras</strong> do nome (ex: <em>oi, tudo bem?</em>).</p>
             </div>
           </div>
-          ${isEdit ? `<p class="form-hint">Cadastrados: ${previewAudios} áudio(s) na prévia · ${deliveryAudios} na entrega</p>` : ""}
+          ${audioLibraryHtml(isEdit ? bot.audioLibrary : [])}
+          <div class="audio-add-grid">
+            <label class="field">
+              Nome do áudio (o que ele fala)
+              <input name="newAudioLabel" placeholder='oi, tudo bem?' />
+            </label>
+            <label class="field">
+              Palavras extras (opcional, vírgula)
+              <input name="newAudioKeywords" placeholder="oi,ola,e ai" />
+            </label>
+          </div>
           <label class="field">
-            Áudios de prévia
+            Arquivo de áudio
             <div class="dropzone dropzone-audio">
-              <p style="color:var(--muted);margin-bottom:8px">${icons.upload} Envie áudios que o bot manda antes do Pix</p>
-              <input name="previewAudioFiles" type="file" accept="audio/*,.ogg,.opus,audio/ogg" multiple />
+              <p style="color:var(--muted);margin-bottom:8px">${icons.upload} MP3, M4A ou OGG (nota de voz)</p>
+              <input name="newAudioFile" type="file" accept="audio/*,.ogg,.opus,audio/ogg" />
             </div>
           </label>
-          <label class="field" style="margin-top:12px">
-            Áudios na entrega (após pagamento)
-            <div class="dropzone dropzone-audio">
-              <p style="color:var(--muted);margin-bottom:8px">${icons.upload} Áudios liberados depois do comprovante aprovado</p>
-              <input name="deliveryAudioFiles" type="file" accept="audio/*,.ogg,.opus,audio/ogg" multiple />
-            </div>
-          </label>
+          ${isEdit ? `<p class="form-hint">Prévia: ${previewAudios} áudio(s) · Entrega: ${deliveryAudios} áudio(s) em mídias gerais</p>` : ""}
         </div>
 
         <label class="field span-2" id="prompt">Prompt / persona da IA

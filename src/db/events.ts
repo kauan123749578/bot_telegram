@@ -283,6 +283,29 @@ export async function logSale(input: {
   await saveFileStore(store);
 }
 
+export async function listLeadsByBot(botId: string) {
+  if (useDatabase()) {
+    const { rows } = await getPool().query(
+      `SELECT chat_id, username, display_name FROM leads WHERE bot_id = $1 ORDER BY last_message_at DESC`,
+      [botId]
+    );
+    return rows.map((r) => ({
+      chatId: Number(r.chat_id),
+      username: r.username as string | undefined,
+      displayName: r.display_name as string | undefined
+    }));
+  }
+
+  const store = await loadFileStore();
+  return store.leads
+    .filter((l) => l.botId === botId)
+    .map((l) => ({
+      chatId: l.chatId,
+      username: l.username,
+      displayName: l.displayName
+    }));
+}
+
 export async function listLeads(limit = 100) {
   if (useDatabase()) {
     const { rows } = await getPool().query(

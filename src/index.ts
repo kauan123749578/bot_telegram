@@ -14,6 +14,7 @@ import { initDatabase, useDatabase } from "./db/index.js";
 import { logMessage, logReceipt, logSale, upsertLead } from "./db/events.js";
 import { decryptSecret } from "./lib/crypto.js";
 import { createLaranjinhaCharge } from "./lib/laranjinha.js";
+import { findNamedAudio } from "./lib/named-audio.js";
 import { randomPreviewIntro } from "./lib/humanize.js";
 import { formatReceiptOutcome, randomReceiptAck } from "./lib/receipt-messages.js";
 import {
@@ -25,6 +26,7 @@ import { getOpenAI, getOpenAIModel } from "./lib/settings.js";
 import {
   humanReadingPause,
   humanSendMediaList,
+  humanSendNamedAudio,
   humanSendText,
   humanSendTexts
 } from "./lib/telegram-send.js";
@@ -349,6 +351,13 @@ async function startBot(config: BotConfig) {
     const history = runtime.historyByChat.get(chatId) || [];
     runtime.historyByChat.set(chatId, history);
 
+    const library = config.audioLibrary ?? [];
+    const userAudio = findNamedAudio(text, library);
+    if (userAudio) {
+      await humanSendNamedAudio(ctx.telegram, chatId, config, userAudio.url);
+      return;
+    }
+
     if (wantsPreview(text) && config.previewMediaUrls.length > 0) {
       await sendPreview(runtime, chatId);
       return;
@@ -371,6 +380,9 @@ async function startBot(config: BotConfig) {
             content: `${config.prompt}
 
 Pix: ${config.pixKey}. Produto: ${config.productName}.
+Audios nomeados (quando fizer sentido, cite exatamente o nome para o sistema enviar o arquivo): ${
+              library.map((a) => `"${a.label}"`).join(", ") || "nenhum"
+            }.
 Regras: respostas curtas e naturais; uma ideia por vez; nao repita frases; se pedirem previa/foto, diga que vai mandar sem enviar links; nao invente que ja enviou midia.`
           },
           ...history.slice(-10),
@@ -386,7 +398,12 @@ Regras: respostas curtas e naturais; uma ideia por vez; nao repita frases; se pe
         /previa|prévia|vou te mandar|segue a foto|mando agora|olha s[oó]/i.test(lower) &&
         config.previewMediaUrls.length > 0;
 
-      await humanSendText(ctx.telegram, chatId, config, reply);
+      const replyAudio = findNamedAudio(reply, library);
+      if (replyAudio) {
+        await humanSendNamedAudio(ctx.telegram, chatId, config, replyAudio.url);
+      } else {
+        await humanSendText(ctx.telegram, chatId, config, reply);
+      }
 
       if (aiOffersPreview) {
         await sendPreview(runtime, chatId, { skipIntro: true });
