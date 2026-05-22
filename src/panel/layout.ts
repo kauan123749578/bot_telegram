@@ -2,6 +2,7 @@ import { APP_VERSION } from "../version.js";
 import { globalStyles } from "./styles.js";
 import { icons } from "./icons.js";
 import { panelClientScript } from "./panel-client.js";
+import { brandMarkHtml } from "./brand.js";
 
 export type NavId =
   | "dashboard"
@@ -13,6 +14,7 @@ export type NavId =
   | "payments"
   | "products"
   | "media"
+  | "audios"
   | "remarketing";
 
 export function escapeHtml(value: string) {
@@ -53,7 +55,7 @@ export function appLayout(
   <div class="ambient" aria-hidden="true"></div>
   <div class="app">
     <aside class="sidebar">
-      <div class="sidebar-brand"><div class="logo">BM</div> BotManager</div>
+      <div class="sidebar-brand">${brandMarkHtml()}</div>
       <a href="/instances/new" class="btn-new">${icons.plus} Nova Instância</a>
       <nav class="nav">
         <div class="nav-section">
@@ -64,6 +66,7 @@ export function appLayout(
           ${navItem("/conversations", "Conversas", icons.chat, is("conversations"))}
           ${navItem("/payments", "Pagamentos", icons.card, is("payments"))}
           ${navItem("/products", "Produtos", icons.box, is("products"))}
+          ${navItem("/audios", "Áudios", icons.audio, is("audios"))}
           ${navItem("/media", "Mídias", icons.image, is("media"))}
           ${navItem("/settings", "Configurações", icons.settings, is("settings"))}
         </div>

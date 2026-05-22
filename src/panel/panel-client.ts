@@ -10,6 +10,7 @@ export const panelClientScript = `
     ["/instances", "Instâncias"],
     ["/leads", "Leads"],
     ["/remarketing", "Remarketing"],
+    ["/audios", "Áudios"],
     ["/conversations", "Conversas"],
     ["/payments", "Pagamentos"],
     ["/products", "Produtos"],

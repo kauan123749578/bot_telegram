@@ -1,13 +1,17 @@
-# Deploy no Railway — quando o GitHub não dispara sozinho
+# Deploy no Railway
 
-## Situação
+## Conta nova / primeiro deploy
+
+Siga o guia completo: **[RAILWAY-SETUP.md](./RAILWAY-SETUP.md)** (Postgres, volume, variáveis, domínio).
+
+## Situação — redeploy
 
 O código no GitHub pode estar **mais novo** que o que está no ar.
 
-Confira: abra `https://telegramia-production.up.railway.app/health`
+Confira: abra `https://SEU-DOMINIO.up.railway.app/health`
 
-- Se `"version": "0.2.0"` → produção **atrasada**
-- Se `"version": "0.3.0"` (ou maior) → deploy **ok**
+- Se `"version": "0.4.0"` → deploy **ok**
+- Versão menor → faça redeploy (opções abaixo)
 
 ## Opção A — Redeploy manual (mais rápido)
 

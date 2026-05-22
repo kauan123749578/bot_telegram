@@ -14,7 +14,25 @@ import { initDatabase, useDatabase } from "./db/index.js";
 import { logMessage, logReceipt, logSale, upsertLead } from "./db/events.js";
 import { decryptSecret } from "./lib/crypto.js";
 import { createLaranjinhaCharge } from "./lib/laranjinha.js";
-import { findNamedAudio } from "./lib/named-audio.js";
+import {
+  audioLibraryPrompt,
+  audioSlug,
+  findContextualLeadAudio,
+  pickAudioFromAi
+} from "./lib/named-audio.js";
+import {
+  isGreeting,
+  limitSentences,
+  wantsPixIntent,
+  wantsPreviewIntent,
+  wantsPriceTable
+} from "./lib/bot-intents.js";
+import {
+  naosouFakeMessage,
+  parsePromptActions,
+  priceTableMessage,
+  PROMPT_ACTION_HINT
+} from "./lib/prompt-actions.js";
 import { randomPreviewIntro } from "./lib/humanize.js";
 import { formatReceiptOutcome, randomReceiptAck } from "./lib/receipt-messages.js";
 import {
@@ -40,7 +58,13 @@ type RuntimeBot = {
   bot: Telegraf;
   historyByChat: Map<number, OpenAI.Chat.Completions.ChatCompletionMessageParam[]>;
   previewSentAt: Map<number, number>;
+  previewUsed: Set<number>;
+  ignoredChats: Set<number>;
+  /** evita mandar o mesmo input de audio toda hora (chatId:slug -> timestamp) */
+  audioCooldown: Map<string, number>;
 };
+
+const AUDIO_COOLDOWN_MS = 3 * 60 * 1000;
 
 const runningBots = new Map<string, RuntimeBot>();
 
@@ -69,15 +93,6 @@ async function downloadBuffer(url: string) {
   return Buffer.from(await response.arrayBuffer());
 }
 
-function wantsPreview(text: string) {
-  return /previa|prévia|foto|video|vídeo|audio|áudio|amostra|ver antes|manda foto|mandar foto/i.test(
-    text
-  );
-}
-
-function wantsPix(text: string) {
-  return /pix|pagar|pagamento|valor|preco|preço|comprar|acesso|liberar/i.test(text);
-}
 
 async function analyzeReceiptPdf(input: { pdfUrl: string; config: BotConfig }): Promise<ReceiptVerdict> {
   const buffer = await downloadBuffer(input.pdfUrl);
@@ -209,19 +224,29 @@ async function sendPaymentInstructions(bot: Telegraf, chatId: number, config: Bo
 }
 
 async function sendPreview(runtime: RuntimeBot, chatId: number, opts?: { skipIntro?: boolean }) {
-  const { bot, config, previewSentAt } = runtime;
-  const now = Date.now();
-  const last = previewSentAt.get(chatId) ?? 0;
+  const { bot, config, previewSentAt, previewUsed } = runtime;
 
-  if (now - last < PREVIEW_COOLDOWN_MS) {
+  if (previewUsed.has(chatId)) {
+    await humanSendText(
+      bot.telegram,
+      chatId,
+      config,
+      "ja te mostrei amor, agora so comprando que mando do jeito que voce quiser 😘"
+    );
     return false;
   }
 
+  const now = Date.now();
+  const last = previewSentAt.get(chatId) ?? 0;
+  if (now - last < PREVIEW_COOLDOWN_MS) return false;
+
   previewSentAt.set(chatId, now);
+  previewUsed.add(chatId);
   if (!opts?.skipIntro) {
     await humanSendText(bot.telegram, chatId, config, randomPreviewIntro());
   }
   await humanSendMediaList(bot.telegram, chatId, config, config.previewMediaUrls);
+  await humanSendText(bot.telegram, chatId, config, "Gostou amor? 😘");
   return true;
 }
 
@@ -258,8 +283,20 @@ async function startBot(config: BotConfig) {
     config,
     bot,
     historyByChat: new Map(),
-    previewSentAt: new Map()
+    previewSentAt: new Map(),
+    previewUsed: new Set(),
+    ignoredChats: new Set(),
+    audioCooldown: new Map()
   };
+
+  function canSendAudio(chatId: number, item: import("./bots.js").NamedAudio) {
+    const slug = audioSlug(item);
+    const key = `${chatId}:${slug}`;
+    const last = runtime.audioCooldown.get(key) ?? 0;
+    if (Date.now() - last < AUDIO_COOLDOWN_MS) return false;
+    runtime.audioCooldown.set(key, Date.now());
+    return true;
+  }
 
   bot.start(async (ctx) => {
     const from = ctx.from;
@@ -340,6 +377,9 @@ async function startBot(config: BotConfig) {
     const chatId = ctx.chat.id;
     const text = ctx.message.text;
     const from = ctx.from;
+
+    if (runtime.ignoredChats.has(chatId)) return;
+
     await upsertLead({
       botId: config.id,
       chatId,
@@ -352,18 +392,26 @@ async function startBot(config: BotConfig) {
     runtime.historyByChat.set(chatId, history);
 
     const library = config.audioLibrary ?? [];
-    const userAudio = findNamedAudio(text, library);
-    if (userAudio) {
-      await humanSendNamedAudio(ctx.telegram, chatId, config, userAudio.url);
+
+    const leadAudio = findContextualLeadAudio(text, library);
+    if (leadAudio && canSendAudio(chatId, leadAudio)) {
+      await humanSendNamedAudio(ctx.telegram, chatId, config, leadAudio.url);
+      await logMessage({
+        botId: config.id,
+        chatId,
+        role: "assistant",
+        content: `[audio] ${leadAudio.label}`
+      });
+      history.push({ role: "user", content: text }, { role: "assistant", content: `[audio] ${leadAudio.label}` });
       return;
     }
 
-    if (wantsPreview(text) && config.previewMediaUrls.length > 0) {
+    if (wantsPreviewIntent(text) && config.previewMediaUrls.length > 0) {
       await sendPreview(runtime, chatId);
       return;
     }
 
-    if (wantsPix(text)) {
+    if (wantsPixIntent(text)) {
       await sendPaymentInstructions(bot, chatId, config);
       return;
     }
@@ -373,39 +421,69 @@ async function startBot(config: BotConfig) {
       const model = await getOpenAIModel(config.userId);
       const completion = await openai.chat.completions.create({
         model,
-        temperature: 0.8,
+        temperature: 0.75,
         messages: [
           {
             role: "system",
             content: `${config.prompt}
 
-Pix: ${config.pixKey}. Produto: ${config.productName}.
-Audios nomeados (quando fizer sentido, cite exatamente o nome para o sistema enviar o arquivo): ${
-              library.map((a) => `"${a.label}"`).join(", ") || "nenhum"
-            }.
-Regras: respostas curtas e naturais; uma ideia por vez; nao repita frases; se pedirem previa/foto, diga que vai mandar sem enviar links; nao invente que ja enviou midia.`
+Pix: ${config.pixKey}. Produto padrao: ${config.productName}.
+${PROMPT_ACTION_HINT}
+Audios: ${audioLibraryPrompt(library)}.`
           },
-          ...history.slice(-10),
+          ...history.slice(-12),
           { role: "user", content: text }
         ]
       });
-      const reply = completion.choices[0]?.message.content?.trim() || "Me chama de novo.";
-      history.push({ role: "user", content: text }, { role: "assistant", content: reply });
-      await logMessage({ botId: config.id, chatId, role: "assistant", content: reply });
+      const rawReply = completion.choices[0]?.message.content?.trim() || "oii amor, me chama de novo 😘";
+      const { clean, actions, audioSlugs } = parsePromptActions(rawReply);
+      const chosenAudio = pickAudioFromAi(library, {
+        audioSlugs,
+        actions,
+        reply: rawReply,
+        userText: text
+      });
+      let outText = limitSentences(clean);
 
-      const lower = reply.toLowerCase();
+      if (isGreeting(text) && history.length === 0 && !outText) {
+        outText = "oii amor, tudo bem? 😊";
+      }
+
+      history.push({ role: "user", content: text }, { role: "assistant", content: rawReply });
+      await logMessage({ botId: config.id, chatId, role: "assistant", content: rawReply });
+
+      if (actions.includes("ignorar_lead")) {
+        runtime.ignoredChats.add(chatId);
+      }
+
+      if (actions.includes("send_informacoes")) {
+        await humanSendText(ctx.telegram, chatId, config, priceTableMessage());
+      } else if (chosenAudio && canSendAudio(chatId, chosenAudio)) {
+        await humanSendNamedAudio(ctx.telegram, chatId, config, chosenAudio.url);
+      } else if (actions.includes("naosou_fake")) {
+        await humanSendText(ctx.telegram, chatId, config, naosouFakeMessage());
+      } else if (outText) {
+        await humanSendText(ctx.telegram, chatId, config, outText);
+      }
+
+      if (actions.includes("send_amostra_gratis") && config.previewMediaUrls.length > 0) {
+        await sendPreview(runtime, chatId);
+      }
+
+      if (
+        wantsPriceTable(text) &&
+        !actions.includes("send_informacoes") &&
+        /tabela|precos|preços|valores|quanto/i.test(text) &&
+        !/9[,.]90|15[,.]00|20[,.]00/.test(outText)
+      ) {
+        await humanSendText(ctx.telegram, chatId, config, priceTableMessage());
+      }
+
+      const lower = clean.toLowerCase();
       const aiOffersPreview =
         /previa|prévia|vou te mandar|segue a foto|mando agora|olha s[oó]/i.test(lower) &&
         config.previewMediaUrls.length > 0;
-
-      const replyAudio = findNamedAudio(reply, library);
-      if (replyAudio) {
-        await humanSendNamedAudio(ctx.telegram, chatId, config, replyAudio.url);
-      } else {
-        await humanSendText(ctx.telegram, chatId, config, reply);
-      }
-
-      if (aiOffersPreview) {
+      if (aiOffersPreview && !actions.includes("send_amostra_gratis")) {
         await sendPreview(runtime, chatId, { skipIntro: true });
       }
     } catch (error) {
@@ -485,10 +563,17 @@ await app.listen({ port: env.PORT, host: "0.0.0.0" });
 
 await ensureDataFile();
 const botsOnStart = await loadBots();
+const localBase = `http://127.0.0.1:${env.PORT}`;
 console.log("[startup] Servidor online na porta", env.PORT);
-console.log("[startup] Banco:", useDatabase() ? "PostgreSQL OK" : "arquivos locais (sem DATABASE_URL)");
+console.log("[startup] Banco:", useDatabase() ? "PostgreSQL OK" : "arquivos locais (data/)");
 console.log("[startup] Bots cadastrados:", botsOnStart.length);
-console.log("[startup] Painel publico: https://telegramia-production.up.railway.app");
+console.log("[startup] Painel local:", `${localBase}/login`);
+console.log("[startup] Health:", `${localBase}/health`);
+console.log(
+  "[startup] Login:",
+  env.ADMIN_EMAIL || "admin@botmanager.local",
+  "| senha: PANEL_PASSWORD do .env (padrao: troque-essa-senha)"
+);
 
 void restartBots().catch((error) => console.error("Erro ao iniciar bots:", error));
 

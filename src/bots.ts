@@ -9,8 +9,14 @@ const uploadsDir = path.join(dataDir, "uploads");
 export const botsFile = path.join(dataDir, "bots.json");
 
 export type NamedAudio = {
+  /** Texto que o áudio fala (ex: eu nao sou fake) */
   label: string;
   url: string;
+  /** ID usado no prompt: [[audio:nao_sou_fake]] */
+  slug?: string;
+  /** Frases do lead que podem disparar (opcional) */
+  triggers?: string;
+  /** @deprecated use triggers */
   keywords?: string;
 };
 
@@ -40,11 +46,18 @@ function parseAudioLibrary(value: unknown): NamedAudio[] {
   const raw = typeof value === "string" ? JSON.parse(value) : value;
   if (!Array.isArray(raw)) return [];
   return raw
-    .map((item) => ({
-      label: String(item?.label ?? "").trim(),
-      url: String(item?.url ?? "").trim(),
-      keywords: item?.keywords ? String(item.keywords).trim() : undefined
-    }))
+    .map((item) => {
+      const triggers = String(item?.triggers ?? item?.keywords ?? "").trim();
+      const label = String(item?.label ?? "").trim();
+      const slugRaw = String(item?.slug ?? "").trim();
+      return {
+        label,
+        url: String(item?.url ?? "").trim(),
+        slug: slugRaw || undefined,
+        triggers: triggers || undefined,
+        keywords: triggers || undefined
+      };
+    })
     .filter((item) => item.label && item.url);
 }
 

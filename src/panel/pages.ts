@@ -139,43 +139,68 @@ export function productsPage(
 
 export function remarketingPage(
   bots: BotConfig[],
+  selectedBotId: string,
+  leads: { chatId: number; username?: string; displayName?: string }[],
   message = "",
   isError = false,
   partial?: boolean
 ) {
+  const botOptions =
+    bots.length === 0
+      ? `<option value="">Cadastre uma instância primeiro</option>`
+      : bots
+          .map(
+            (b) =>
+              `<option value="${b.id}" ${b.id === selectedBotId ? "selected" : ""}>${escapeHtml(b.name)}</option>`
+          )
+          .join("");
+
+  const leadRows =
+    leads.length === 0
+      ? `<tr><td colspan="3" class="empty-cell">Nenhum lead nesta instância ainda. Quando alguém falar com o bot, aparece aqui.</td></tr>`
+      : leads
+          .map((lead) => {
+            const name = lead.displayName || lead.username || `Chat ${lead.chatId}`;
+            const handle = lead.username ? `@${lead.username}` : `ID ${lead.chatId}`;
+            return `<tr>
+            <td><strong>${escapeHtml(name)}</strong><br/><span class="muted-sm">${escapeHtml(handle)}</span></td>
+            <td><code>${lead.chatId}</code></td>
+            <td>
+              <textarea name="msg_${lead.chatId}" rows="2" class="remarketing-msg"
+                placeholder="Mensagem só para ${escapeHtml(name)}..."></textarea>
+            </td>
+          </tr>`;
+          })
+          .join("");
+
   const body = `
     ${message ? alertHtml(message, isError ? "error" : "success") : ""}
-    <div class="card card-accent-rose">
-      <div class="card-head"><h3>${icons.megaphone} Remarketing</h3></div>
-      <div class="card-body">
-        <p style="color:var(--text-2);line-height:1.55;margin-bottom:16px">
-          Envia a <strong>mesma mensagem</strong> para todos os leads que já falaram com a instância escolhida.
-          Cada envio respeita o delay humano configurado na instância.
-        </p>
-        <form method="post" action="/remarketing">
-          <label class="field">Instância
-            <select name="botId" required>
-              ${bots.length === 0 ? `<option value="">Cadastre uma instância primeiro</option>` : ""}
-              ${bots.map((b) => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join("")}
-            </select>
-          </label>
-          <label class="field">Mensagem para os leads
-            <textarea name="message" required placeholder="Oi! Ainda tem interesse no VIP? Hoje liberamos condição especial..." style="min-height:120px"></textarea>
-          </label>
-          <button type="submit" class="btn btn-primary btn-block" ${bots.length === 0 ? "disabled" : ""}>
-            Enviar remarketing
-          </button>
-        </form>
+    <div class="page-hero neon-hero">
+      <div>
+        <h2 class="hero-title"><span class="brand-accent">Remarketing</span> personalizado</h2>
+        <p class="hero-desc">Cada lead recebe uma mensagem <strong>diferente</strong>. Deixe em branco quem não deve receber nada.</p>
       </div>
     </div>
-    <div class="card" style="margin-top:16px">
-      <div class="card-head"><h3>Como funciona</h3></div>
-      <div class="card-body" style="font-size:0.88rem;color:var(--text-2);line-height:1.6">
-        <p><strong>1.</strong> Lead conversa com o bot → fica salvo em Leads.</p>
-        <p><strong>2.</strong> Você escreve a campanha aqui e escolhe a instância.</p>
-        <p><strong>3.</strong> O bot manda sua mensagem para cada chat, com pausa entre envios (parece humano).</p>
+    <form method="post" action="/remarketing" class="card card-neon">
+      <div class="card-head"><h3>${icons.megaphone} Campanha por lead</h3></div>
+      <div class="card-body">
+        <label class="field">Instância
+          <select name="botId" required onchange="location.href='/remarketing?botId='+this.value">
+            ${botOptions}
+          </select>
+        </label>
+        <div class="table-scroll remarketing-table-wrap" role="region">
+          <table class="table remarketing-table">
+            <thead><tr><th>Lead</th><th>Chat</th><th>Sua mensagem</th></tr></thead>
+            <tbody>${leadRows}</tbody>
+          </table>
+        </div>
+        <p class="form-hint">Pausa humana entre cada envio (delay da instância). Só leads com texto preenchido recebem mensagem.</p>
+        <button type="submit" class="btn btn-primary btn-block" ${bots.length === 0 || leads.length === 0 ? "disabled" : ""}>
+          Enviar remarketing
+        </button>
       </div>
-    </div>`;
+    </form>`;
 
   return wrap("Remarketing", "remarketing", body, partial);
 }

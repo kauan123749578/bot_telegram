@@ -29,7 +29,7 @@ export function botAvatarHtml(bot: BotConfig) {
 
 function audioLibraryHtml(library: BotConfig["audioLibrary"]) {
   if (!library?.length) {
-    return `<p class="form-hint">Nenhum áudio nomeado ainda. Ex: nome <strong>oi, tudo bem?</strong> → arquivo com essa fala.</p>`;
+    return `<p class="form-hint">Nenhum áudio ainda. Ex: lead pergunta <strong>de onde</strong> → áudio fala <strong>sou de santa catarina</strong>. Gerencie tudo em <a href="/audios">Áudios</a>.</p>`;
   }
   return `<ul class="audio-library-list">
     ${library
@@ -37,6 +37,8 @@ function audioLibraryHtml(library: BotConfig["audioLibrary"]) {
         (item, i) => `
       <li>
         <span class="audio-library-label">${escapeHtml(item.label)}</span>
+        <code class="audio-slug-tag">[[audio:${escapeHtml(item.slug || item.label.toLowerCase().replace(/\s+/g, "_"))}]]</code>
+        <span class="muted-sm">→ ${escapeHtml(item.triggers || item.keywords || "IA escolhe pelo prompt")}</span>
         <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="card-link">ouvir</a>
         <label class="audio-remove"><input type="checkbox" name="removeAudioIndexes" value="${i}" /> remover</label>
       </li>`
@@ -123,21 +125,26 @@ export function botInstanceForm(mode: "new" | "edit", bot?: BotConfig) {
           <div class="form-section-head">
             <span class="form-section-icon form-section-icon-violet">${icons.audio}</span>
             <div>
-              <h4>Biblioteca de áudios nomeados</h4>
-              <p>O bot envia o arquivo quando o lead ou a IA usar as <strong>mesmas palavras</strong> do nome (ex: <em>oi, tudo bem?</em>).</p>
+              <h4>Biblioteca de áudios</h4>
+              <p>Lead pergunta algo (gatilho) → bot manda o áudio com a resposta gravada. <a href="/audios">Ver biblioteca completa</a>.</p>
             </div>
           </div>
           ${audioLibraryHtml(isEdit ? bot.audioLibrary : [])}
-          <div class="audio-add-grid">
+          <div class="audio-add-grid audio-add-grid-3">
             <label class="field">
-              Nome do áudio (o que ele fala)
-              <input name="newAudioLabel" placeholder='oi, tudo bem?' />
+              O que o áudio <strong>fala</strong>
+              <input name="newAudioLabel" placeholder="eu nao sou fake" />
             </label>
             <label class="field">
-              Palavras extras (opcional, vírgula)
-              <input name="newAudioKeywords" placeholder="oi,ola,e ai" />
+              <strong>ID no prompt</strong> (input)
+              <input name="newAudioSlug" placeholder="nao_sou_fake" />
+            </label>
+            <label class="field">
+              Gatilhos do lead <small>(opcional)</small>
+              <input name="newAudioTriggers" placeholder="fake, golpe, voce e real, desconfio" />
             </label>
           </div>
+          <p class="form-hint">No prompt: <code>se lead desconfiar use [[audio:nao_sou_fake]]</code> — a IA manda o áudio só nessa hora (cooldown 3 min).</p>
           <label class="field">
             Arquivo de áudio
             <div class="dropzone dropzone-audio">

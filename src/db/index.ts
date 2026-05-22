@@ -8,28 +8,31 @@ import path from "node:path";
 const settingsFile = path.join(rootDir, "data", "settings.json");
 
 let pool: pg.Pool | null = null;
+let dbAvailable = false;
 
 export function useDatabase() {
-  return Boolean(env.DATABASE_URL);
+  return dbAvailable;
+}
+
+function createPool() {
+  const url = env.DATABASE_URL?.trim();
+  if (!url) throw new Error("DATABASE_URL nao configurada.");
+  return new pg.Pool({
+    connectionString: url,
+    ssl: url.includes("railway") || url.includes("sslmode=require")
+      ? { rejectUnauthorized: false }
+      : undefined
+  });
 }
 
 export function getPool() {
-  if (!env.DATABASE_URL) {
-    throw new Error("DATABASE_URL nao configurada.");
-  }
-  if (!pool) {
-    pool = new pg.Pool({
-      connectionString: env.DATABASE_URL,
-      ssl: env.DATABASE_URL.includes("railway") || env.DATABASE_URL.includes("sslmode=require")
-        ? { rejectUnauthorized: false }
-        : undefined
-    });
+  if (!dbAvailable || !pool) {
+    throw new Error("PostgreSQL nao disponivel — use modo arquivo local.");
   }
   return pool;
 }
 
-async function migrateFromJsonFiles() {
-  const db = getPool();
+async function migrateFromJsonFiles(db: pg.Pool) {
 
   const { rows: botCount } = await db.query<{ count: string }>(
     "SELECT COUNT(*)::text AS count FROM bots"
@@ -88,12 +91,30 @@ async function migrateFromJsonFiles() {
 }
 
 export async function initDatabase() {
-  if (!useDatabase()) {
+  dbAvailable = false;
+  const url = env.DATABASE_URL?.trim();
+  if (!url) {
     console.log("[db] DATABASE_URL nao definida — usando arquivos em data/ (local apenas).");
     return;
   }
 
-  const db = getPool();
+  let db: pg.Pool | undefined;
+  try {
+    db = createPool();
+    await db.query("SELECT 1");
+  } catch (error) {
+    if (db) await db.end().catch(() => {});
+    pool = null;
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[db] Postgres indisponivel (${msg}) — usando pasta data/ para rodar o painel localmente.`
+    );
+    console.warn("[db] Para usar Postgres: docker compose up -d e DATABASE_URL no .env");
+    return;
+  }
+
+  pool = db;
+  try {
   await db.query(`
     CREATE TABLE IF NOT EXISTS bots (
       id UUID PRIMARY KEY,
@@ -116,7 +137,7 @@ export async function initDatabase() {
     );
   `);
 
-  await migrateFromJsonFiles();
+  await migrateFromJsonFiles(db);
 
   const { initUsersSchema } = await import("./users.js");
   await initUsersSchema();
@@ -124,5 +145,13 @@ export async function initDatabase() {
   const { initEventsSchema } = await import("./events.js");
   await initEventsSchema();
 
+  dbAvailable = true;
   console.log("[db] PostgreSQL conectado e schema pronto.");
+  } catch (error) {
+    await pool?.end().catch(() => {});
+    pool = null;
+    dbAvailable = false;
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[db] Erro ao preparar schema (${msg}) — modo arquivo em data/`);
+  }
 }

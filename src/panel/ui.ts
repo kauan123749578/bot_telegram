@@ -3,6 +3,7 @@ import type { ActivityItem, BotSalesRank } from "../db/events.js";
 import { botInstanceForm, instancesTableHtml } from "./bot-form.js";
 import { icons } from "./icons.js";
 import { alertHtml, appLayout, escapeHtml } from "./layout.js";
+import { brandMarkHtml } from "./brand.js";
 import { salesChartSvgFromData } from "./pages.js";
 import { globalStyles } from "./styles.js";
 
@@ -107,20 +108,24 @@ export function loginPage(message = "") {
   <style>${globalStyles}</style>
 </head>
 <body>
+  <div class="ambient" aria-hidden="true"></div>
   <div class="login-page">
     <div class="login-hero">
-      <div class="sidebar-brand" style="padding:0 0 24px">
-        <div class="logo">BM</div> BotManager
-      </div>
-      <h1>Gerencie bots que vendem no automático</h1>
-      <p style="color:var(--text-2);line-height:1.6;max-width:420px">
-        IA, Pix, comprovantes, prévias e entrega automática — painel profissional para suas instâncias Telegram.
+      ${brandMarkHtml("Painel Telegram")}
+      <h1><span class="brand-accent">Bots</span> que vendem no automático</h1>
+      <p style="color:var(--text-2);line-height:1.65;max-width:440px">
+        IA humanizada, áudios por gatilho, Pix, comprovantes e remarketing personalizado — tudo no estilo profissional de gestor de bots.
       </p>
+      <div class="login-pills">
+        <span class="login-pill">Áudios inteligentes</span>
+        <span class="login-pill">Remarketing 1:1</span>
+        <span class="login-pill">Pix + IA</span>
+      </div>
     </div>
     <div class="login-form">
       <div class="login-box">
         <h2>Bem-vindo de volta</h2>
-        <p style="color:var(--muted);margin-bottom:24px">Cada cliente tem login e painel separado.</p>
+        <p style="color:var(--muted);margin-bottom:24px">Entre na sua conta BotManager</p>
         ${message ? alertHtml(message, "error") : ""}
         <form method="post" action="/login">
           <label class="field">E-mail

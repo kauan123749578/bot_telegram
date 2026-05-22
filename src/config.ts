@@ -9,7 +9,8 @@ export const rootDir = path.resolve(dirname, "..");
 // No Railway as variaveis vem do painel (process.env), nao do arquivo .env local.
 const isRailway = Boolean(process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_ENVIRONMENT);
 if (!isRailway) {
-  dotenv.config({ path: path.join(rootDir, ".env"), quiet: true });
+  // override: true — .env local sobrescreve DATABASE_URL do sistema (evita crash sem Postgres)
+  dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true });
 }
 
 const envSchema = z.object({
@@ -37,7 +38,7 @@ function loadEnv() {
   const parsed = envSchema.safeParse(process.env);
   if (parsed.success) {
     const data = parsed.data;
-    const databaseUrl = data.DATABASE_URL || data.DATABASE_PUBLIC_URL;
+    const databaseUrl = (data.DATABASE_URL || data.DATABASE_PUBLIC_URL || "").trim();
     return {
       ...data,
       DATABASE_URL: databaseUrl,

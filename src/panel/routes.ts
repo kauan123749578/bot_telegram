@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { env } from "../config.js";
+import { env, rootDir } from "../config.js";
 import { useDatabase } from "../db/index.js";
 import {
   dashboardStats,
@@ -40,6 +40,7 @@ import {
   remarketingPage,
   salesChartSvgFromData
 } from "./pages.js";
+import { audiosPage } from "./audios-page.js";
 import {
   activityFeedHtml,
   dashboardPage,
@@ -125,10 +126,14 @@ function mergeAudioLibrary(
 
   const label = fields.newAudioLabel?.trim();
   if (label && newUrl) {
+    const triggers = (fields.newAudioTriggers || fields.newAudioKeywords)?.trim();
+    const slug = fields.newAudioSlug?.trim();
     library.push({
       label,
       url: newUrl,
-      keywords: fields.newAudioKeywords?.trim() || undefined
+      slug: slug || undefined,
+      triggers: triggers || undefined,
+      keywords: triggers || undefined
     });
   }
 
@@ -188,14 +193,16 @@ export async function registerPanelRoutes(
 
   app.addHook("onRequest", async (request, reply) => {
     const urlPath = request.url.split("?")[0];
-    const publicPaths = ["/login", "/register", "/uploads", "/health"];
+    const publicPaths = ["/login", "/register", "/uploads", "/health", "/brand"];
     if (publicPaths.some((p) => urlPath === p || urlPath.startsWith(`${p}/`))) return;
     if (!isAuthenticated(request)) return reply.redirect("/login");
   });
 
   app.get("/health", async (_request, reply) => {
     const { APP_VERSION } = await import("../version.js");
-    return reply.send({ ok: true, version: APP_VERSION, database: useDatabase() });
+    return reply
+      .type("application/json")
+      .send({ ok: true, version: APP_VERSION, database: useDatabase(), mode: useDatabase() ? "postgres" : "files" });
   });
 
   app.get("/login", async (request, reply) => {
@@ -321,16 +328,69 @@ export async function registerPanelRoutes(
     return reply.type("text/html").send(html);
   });
 
+  app.get("/brand/telegram-logo.png", async (_request, reply) => {
+    const logoPath = path.join(rootDir, "Telegram-Logo.png");
+    try {
+      await fs.access(logoPath);
+    } catch {
+      return reply.code(404).send("Logo nao encontrada.");
+    }
+    return reply.type("image/png").send(fsSync.createReadStream(logoPath));
+  });
+
+  app.get("/audios", async (request, reply) => {
+    const user = requireUser(request, reply);
+    if (!user) return;
+    const query = z
+      .object({ botId: z.string().optional(), msg: z.string().optional(), t: z.string().optional() })
+      .parse(request.query);
+    const bots = await loadBots(user.id);
+    const botId = query.botId || bots[0]?.id || "";
+    const html = audiosPage(bots, botId, query.msg, query.t === "err", isPartial(request));
+    return reply.type("text/html").send(html);
+  });
+
+  app.post("/audios", async (request, reply) => {
+    const user = requireUser(request, reply);
+    if (!user) return;
+    let botId = "";
+    try {
+      const { fields, newNamedAudioUrl } = await parseBotMultipart(request);
+      botId = fields.botId?.trim() || "";
+      if (!botId) throw new Error("Instância não informada.");
+      const bot = await getBotById(botId, user.id);
+      if (!bot) throw new Error("Instância não encontrada.");
+
+      const library = mergeAudioLibrary(bot.audioLibrary ?? [], fields, newNamedAudioUrl);
+      await upsertBot({ ...bot, audioLibrary: library });
+      hooks.restartBots();
+      return reply.redirect(
+        flashRedirect(`/audios?botId=${botId}`, "Biblioteca de áudios atualizada!")
+      );
+    } catch (error) {
+      request.log.error(error);
+      return reply.redirect(
+        flashRedirect(`/audios?botId=${botId}`, `Erro: ${errorMessage(error)}`, "err")
+      );
+    }
+  });
+
   app.get("/remarketing", async (request, reply) => {
     const user = requireUser(request, reply);
     if (!user) return;
-    const query = z.object({ msg: z.string().optional(), t: z.string().optional() }).parse(request.query);
-    const html = remarketingPage(
-      await loadBots(user.id),
-      query.msg,
-      query.t === "err",
-      isPartial(request)
-    );
+    const query = z
+      .object({
+        botId: z.string().optional(),
+        msg: z.string().optional(),
+        t: z.string().optional()
+      })
+      .parse(request.query);
+    const bots = await loadBots(user.id);
+    const botId = query.botId || bots[0]?.id || "";
+    const bot = botId ? await getBotById(botId, user.id) : null;
+    const { listLeadsByBot } = await import("../db/events.js");
+    const leads = bot ? await listLeadsByBot(bot.id) : [];
+    const html = remarketingPage(bots, botId, leads, query.msg, query.t === "err", isPartial(request));
     return reply.type("text/html").send(html);
   });
 
@@ -338,24 +398,35 @@ export async function registerPanelRoutes(
     const user = requireUser(request, reply);
     if (!user) return;
     try {
-      const body = z
-        .object({
-          botId: z.string().min(1),
-          message: z.string().min(1).max(4000)
-        })
-        .parse(request.body ?? {});
+      const raw = (request.body ?? {}) as Record<string, string>;
+      const botId = raw.botId?.trim();
+      if (!botId) throw new Error("Escolha uma instância.");
 
-      const bot = await getBotById(body.botId, user.id);
+      const bot = await getBotById(botId, user.id);
       if (!bot) return reply.redirect(flashRedirect("/remarketing", "Instância não encontrada.", "err"));
       if (!bot.active) {
         return reply.redirect(flashRedirect("/remarketing", "Ative a instância antes de enviar.", "err"));
       }
 
-      const result = await sendRemarketing({ config: bot, message: body.message.trim() });
+      const messages = Object.entries(raw)
+        .filter(([key]) => key.startsWith("msg_"))
+        .map(([key, value]) => ({
+          chatId: Number(key.slice(4)),
+          message: String(value || "").trim()
+        }))
+        .filter((m) => Number.isFinite(m.chatId) && m.message.length > 0);
+
+      if (messages.length === 0) {
+        return reply.redirect(
+          flashRedirect("/remarketing?botId=" + botId, "Preencha ao menos uma mensagem para um lead.", "err")
+        );
+      }
+
+      const result = await sendRemarketing({ config: bot, messages });
       return reply.redirect(
         flashRedirect(
-          "/remarketing",
-          `Remarketing: ${result.sent} enviada(s), ${result.failed} falha(s), de ${result.total} lead(s).`
+          `/remarketing?botId=${botId}`,
+          `Remarketing: ${result.sent} enviada(s), ${result.failed} falha(s), ${result.skipped} sem mensagem, de ${result.total} lead(s).`
         )
       );
     } catch (error) {
