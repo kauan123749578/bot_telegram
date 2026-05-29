@@ -4,6 +4,22 @@
 
 Siga o guia completo: **[RAILWAY-SETUP.md](./RAILWAY-SETUP.md)** (Postgres, volume, variáveis, domínio).
 
+## IMPORTANTE — qual repositório o Railway usa?
+
+O serviço **bot_telegram** no Railway está ligado a:
+
+**`kauan123749578/bot_telegram`** (remote `origin`)
+
+Toda atualização precisa ir para esse repo:
+
+```bash
+git push origin main
+```
+
+O remote `telegramia` (`wqiprime-gif/telegramIA`) é cópia/espelho — **não atualiza o Railway** sozinho.
+
+Se no Railway aparecer **"GitHub Repo not found"**: Settings → Source → **Disconnect** → conecte de novo `kauan123749578/bot_telegram` (ou troque para `telegramIA` se preferir um repo só).
+
 ## Situação — redeploy
 
 O código no GitHub pode estar **mais novo** que o que está no ar.
